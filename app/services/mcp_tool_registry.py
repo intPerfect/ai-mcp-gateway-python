@@ -82,9 +82,10 @@ class McpToolRegistry:
         return list(self._tools.values())
     
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        """获取工具定义列表（用于LLM）"""
+        """获取工具定义列表（用于LLM - Anthropic格式）"""
         tools = []
         for tool in self._tools.values():
+            # Anthropic API 使用 input_schema 字段
             tools.append({
                 "name": tool.name,
                 "description": tool.description,
@@ -189,25 +190,14 @@ class McpToolRegistry:
                 http_method = http_config.http_method
                 http_headers = self._parse_headers(http_config.http_headers)
                 timeout = http_config.timeout
-                
-                # 健康检查
-                is_healthy, health_msg = await self.health_check(http_url, timeout)
-                
-                tool_status = ToolStatus(
+
+                # 直接注册，跳过健康检查避免阻塞（健康状态在工具实际调用时更新）
+                self._tool_status[tool.tool_name] = ToolStatus(
                     name=tool.tool_name,
-                    status="healthy" if is_healthy else "unhealthy",
-                    http_url=http_url,
-                    error=None if is_healthy else health_msg
+                    status="unknown",
+                    http_url=http_url
                 )
-                self._tool_status[tool.tool_name] = tool_status
-                
-                if is_healthy:
-                    result["healthy"].append(tool.tool_name)
-                else:
-                    result["unhealthy"].append({
-                        "name": tool.tool_name,
-                        "error": health_msg
-                    })
+                result["healthy"].append(tool.tool_name)
                 
                 # 获取参数映射构建input_schema
                 mappings = await self._repository.get_protocol_mappings(tool.protocol_id, "request")
@@ -284,16 +274,23 @@ class McpToolRegistry:
                     # 根据mappings构建请求
                     request_data = self._build_request_data(mappings, args)
                     
+                    # 替换URL路径参数，如 /api/products/{product_id} -> /api/products/1
+                    final_url = http_url
+                    for key, value in args.items():
+                        placeholder = f"{{{key}}}"
+                        if placeholder in final_url:
+                            final_url = final_url.replace(placeholder, str(value))
+                    
                     if http_method.upper() == "GET":
                         response = await client.get(
-                            http_url,
+                            final_url,
                             params=request_data,
                             headers=http_headers
                         )
                     else:
                         response = await client.request(
                             method=http_method,
-                            url=http_url,
+                            url=final_url,
                             json=request_data,
                             headers=http_headers
                         )

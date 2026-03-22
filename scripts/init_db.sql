@@ -101,16 +101,4 @@ INSERT INTO `mcp_gateway_auth` (`id`, `gateway_id`, `api_key`, `rate_limit`, `ex
 VALUES 
     (1, 'gateway_001', 'gw-test-api-key-001', 360000, '2099-12-31 23:59:59', 1);
 
-INSERT INTO `mcp_gateway_tool` (`id`, `gateway_id`, `tool_id`, `tool_name`, `tool_type`, `tool_description`, `tool_version`, `protocol_id`, `protocol_type`)
-VALUES (1, 'gateway_001', 1, 'JavaSDKMCPClient_getCompanyEmployee', 'function', 'Get company employee information', '1.0.0', 1, 'http');
 
-INSERT INTO `mcp_protocol_http` (`id`, `protocol_id`, `http_url`, `http_method`, `http_headers`, `timeout`, `retry_times`, `status`)
-VALUES (1, 1, 'http://localhost:8701/api/v1/mcp/get_company_employee', 'post', '{"Content-Type": "application/json"}', 30000, 0, 1);
-
-INSERT INTO `mcp_protocol_mapping` (`id`, `protocol_id`, `mapping_type`, `parent_path`, `field_name`, `mcp_path`, `mcp_type`, `mcp_desc`, `is_required`, `sort_order`)
-VALUES
-    (1, 1, 'request', NULL, 'xxxRequest01', 'xxxRequest01', 'object', NULL, 1, 1),
-    (2, 1, 'request', 'xxxRequest01', 'city', 'xxxRequest01.city', 'string', 'City name, convert Chinese to pinyin, e.g. beijing', 1, 1),
-    (3, 1, 'request', 'xxxRequest01', 'company', 'xxxRequest01.company', 'object', 'Company info', 1, 2),
-    (4, 1, 'request', 'xxxRequest01.company', 'name', 'xxxRequest01.company.name', 'string', 'Company name', 1, 1),
-    (5, 1, 'request', 'xxxRequest01.company', 'type', 'xxxRequest01.company.type', 'string', 'Company type', 1, 2);
