@@ -92,28 +92,11 @@ async def health():
 
 
 if __name__ == "__main__":
-    import subprocess
-    import time
-
-    def kill_port(port):
-        """Kill all processes using the specified port via PowerShell"""
-        try:
-            subprocess.run(
-                f'powershell -Command "'
-                f'Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue '
-                f'| ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"',
-                shell=True,
-                capture_output=True,
-            )
-            print(f"Killed processes on port {port}")
-        except Exception as e:
-            print(f"Error killing port {port}: {e}")
+    from app.utils.port_manager import kill_port_and_wait
+    import uvicorn
 
     # Kill any existing processes on the port and wait for OS to release it
-    kill_port(8777)
-    time.sleep(2)
-
-    import uvicorn
+    kill_port_and_wait(settings.server_port, wait_seconds=2)
 
     uvicorn.run(
         "app.main:app",
