@@ -92,15 +92,16 @@ async def health():
 
 
 if __name__ == "__main__":
-    from app.utils.port_manager import kill_port_and_wait
+    from app.utils.port_manager import PortManager
     import uvicorn
 
-    # Kill any existing processes on the port and wait for OS to release it
-    kill_port_and_wait(settings.server_port, wait_seconds=2)
+    # 清理端口
+    port = settings.server_port
+    PortManager.kill_port(port)
 
     uvicorn.run(
         "app.main:app",
         host=settings.server_host,
-        port=settings.server_port,
+        port=port,
         reload=False,
     )

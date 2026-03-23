@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MCP Tool Registry - 动态工具注册服务
+MCP Tool Registry v3.0 - 动态工具注册服务
 从数据库读取接口配置，健康检查后动态注册MCP工具
 """
 import json
@@ -49,9 +49,8 @@ class McpToolRegistry:
         input_schema: Dict[str, Any],
         handler: Callable
     ) -> bool:
-        """注册工具"""
+        """注册工具（静默注册，不输出单条日志）"""
         if name in self._tools:
-            logger.warning(f"工具已存在: {name}")
             return False
         
         self._tools[name] = ToolDefinition(
@@ -60,7 +59,6 @@ class McpToolRegistry:
             input_schema=input_schema,
             handler=handler
         )
-        logger.info(f"注册工具成功: {name}")
         return True
     
     def unregister_tool(self, name: str) -> bool:
@@ -85,7 +83,6 @@ class McpToolRegistry:
         """获取工具定义列表（用于LLM - Anthropic格式）"""
         tools = []
         for tool in self._tools.values():
-            # Anthropic API 使用 input_schema 字段
             tools.append({
                 "name": tool.name,
                 "description": tool.description,
@@ -117,7 +114,6 @@ class McpToolRegistry:
             return result
         except Exception as e:
             logger.error(f"工具执行异常: {name} - {str(e)}")
-            # 更新状态
             self._tool_status[name] = ToolStatus(
                 name=name,
                 status="unhealthy",
@@ -127,15 +123,9 @@ class McpToolRegistry:
             return {"error": str(e)}
     
     async def health_check(self, http_url: str, timeout: int = 5000) -> tuple[bool, str]:
-        """
-        健康检查HTTP接口
-        
-        Returns:
-            (is_healthy, message)
-        """
+        """健康检查HTTP接口"""
         try:
             async with httpx.AsyncClient(timeout=timeout / 1000) as client:
-                # 发送GET请求检查接口是否可用
                 response = await client.get(http_url)
                 if response.status_code < 500:
                     return True, f"OK (status: {response.status_code})"
@@ -153,19 +143,9 @@ class McpToolRegistry:
         db_session: AsyncSession,
         gateway_id: str = "gateway_001"
     ) -> Dict[str, Any]:
-        """
-        从数据库加载工具配置
-        
-        Args:
-            db_session: 数据库会话
-            gateway_id: 网关ID
-        
-        Returns:
-            {"registered": [...], "failed": [...], "healthy": [...], "unhealthy": [...]}
-        """
+        """从数据库加载工具配置"""
         self._repository = McpGatewayRepository(db_session)
         
-        # 获取所有工具配置
         tools = await self._repository.get_tools_by_gateway_id(gateway_id)
         
         result = {
@@ -177,7 +157,6 @@ class McpToolRegistry:
         
         for tool in tools:
             try:
-                # 获取HTTP协议配置
                 http_config = await self._repository.get_protocol_http_by_id(tool.protocol_id)
                 if not http_config:
                     result["failed"].append({
@@ -191,7 +170,6 @@ class McpToolRegistry:
                 http_headers = self._parse_headers(http_config.http_headers)
                 timeout = http_config.timeout
 
-                # 直接注册，跳过健康检查避免阻塞（健康状态在工具实际调用时更新）
                 self._tool_status[tool.tool_name] = ToolStatus(
                     name=tool.tool_name,
                     status="unknown",
@@ -199,8 +177,8 @@ class McpToolRegistry:
                 )
                 result["healthy"].append(tool.tool_name)
                 
-                # 获取参数映射构建input_schema
-                mappings = await self._repository.get_protocol_mappings(tool.protocol_id, "request")
+                # 获取所有参数映射
+                mappings = await self._repository.get_protocol_mappings(tool.protocol_id)
                 input_schema = self._build_input_schema(mappings)
                 
                 # 创建动态handler
@@ -212,7 +190,6 @@ class McpToolRegistry:
                     mappings=mappings
                 )
                 
-                # 注册工具
                 if self.register_tool(
                     name=tool.tool_name,
                     description=tool.tool_description,
@@ -233,10 +210,11 @@ class McpToolRegistry:
                     "error": str(e)
                 })
         
-        logger.info(f"工具加载完成: registered={len(result['registered'])}, "
-                   f"healthy={len(result['healthy'])}, "
-                   f"unhealthy={len(result['unhealthy'])}, "
-                   f"failed={len(result['failed'])}")
+        # 输出一行汇总日志
+        tools_str = ', '.join(result['registered'][:5])
+        if len(result['registered']) > 5:
+            tools_str += f" 等{len(result['registered'])}个"
+        logger.info(f"注册MCP工具: [{tools_str}]")
         
         return result
     
@@ -250,13 +228,53 @@ class McpToolRegistry:
             return {}
     
     def _build_input_schema(self, mappings: List) -> Dict[str, Any]:
-        """构建JSON Schema"""
+        """
+        构建JSON Schema
+        
+        排除path参数（从URL模板解析）
+        """
         if not mappings:
             return {"type": "object", "properties": {}, "required": []}
         
-        from app.domain.session.message_handler import MessageHandler
-        handler = MessageHandler.__new__(MessageHandler)
-        return handler._build_input_schema(mappings)
+        # 过滤：排除path参数
+        input_mappings = [
+            m for m in mappings 
+            if m.param_location != "path"
+        ]
+        
+        # 按sort_order排序
+        sorted_mappings = sorted(input_mappings, key=lambda x: x.sort_order or 0)
+        
+        properties = {}
+        required = []
+        
+        for mapping in sorted_mappings:
+            prop = {"type": mapping.field_type}
+            
+            if mapping.field_desc:
+                prop["description"] = mapping.field_desc
+            
+            if mapping.enum_values:
+                try:
+                    enum_list = json.loads(mapping.enum_values)
+                    prop["enum"] = enum_list
+                except:
+                    pass
+            
+            if mapping.default_value:
+                prop["default"] = mapping.default_value
+            
+            properties[mapping.field_name] = prop
+            
+            if mapping.is_required == 1:
+                required.append(mapping.field_name)
+        
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": required if required else None,
+            "additionalProperties": False
+        }
     
     def _create_http_handler(
         self,
@@ -266,33 +284,55 @@ class McpToolRegistry:
         timeout: int,
         mappings: List
     ) -> Callable:
-        """创建HTTP调用handler"""
+        """
+        创建HTTP调用handler
+        
+        支持多种参数位置：path/query/body/form/header
+        """
         
         async def handler(args: Dict[str, Any]) -> Any:
             try:
                 async with httpx.AsyncClient(timeout=timeout / 1000) as client:
-                    # 根据mappings构建请求
-                    request_data = self._build_request_data(mappings, args)
+                    # 根据mappings构建请求数据
+                    request_parts = self._build_request_parts(mappings, args)
                     
-                    # 替换URL路径参数，如 /api/products/{product_id} -> /api/products/1
+                    # 替换URL路径参数
                     final_url = http_url
-                    for key, value in args.items():
+                    for key, value in request_parts["path"].items():
                         placeholder = f"{{{key}}}"
                         if placeholder in final_url:
                             final_url = final_url.replace(placeholder, str(value))
                     
+                    # 获取查询参数和请求体
+                    query_params = request_parts["query"]
+                    body_data = request_parts["body"]
+                    form_data = request_parts["form"]
+                    header_params = request_parts["header"]
+                    
+                    # 合并header
+                    final_headers = {**http_headers, **header_params}
+                    
                     if http_method.upper() == "GET":
                         response = await client.get(
                             final_url,
-                            params=request_data,
-                            headers=http_headers
+                            params=query_params,
+                            headers=final_headers
+                        )
+                    elif form_data:
+                        response = await client.request(
+                            method=http_method,
+                            url=final_url,
+                            data=form_data,
+                            params=query_params,
+                            headers=final_headers
                         )
                     else:
                         response = await client.request(
                             method=http_method,
                             url=final_url,
-                            json=request_data,
-                            headers=http_headers
+                            json=body_data if body_data else None,
+                            params=query_params if query_params else None,
+                            headers=final_headers
                         )
                     
                     if response.status_code < 400:
@@ -312,21 +352,35 @@ class McpToolRegistry:
         
         return handler
     
-    def _build_request_data(self, mappings: List, args: Dict[str, Any]) -> Dict[str, Any]:
-        """根据mappings构建请求数据"""
-        data = {}
+    def _build_request_parts(self, mappings: List, args: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """
+        根据mappings构建请求数据，按参数位置分类
+        
+        Returns:
+            Dict with keys: 'path', 'query', 'body', 'form', 'header'
+        """
+        parts = {
+            "path": {},
+            "query": {},
+            "body": {},
+            "form": {},
+            "header": {},
+        }
+        
         for mapping in mappings:
             field_name = mapping.field_name
-            mcp_path = mapping.mcp_path
+            param_location = mapping.param_location
+            default_value = mapping.default_value
             
-            if field_name in args:
-                # 直接字段名
-                data[mcp_path] = args[field_name]
-            elif mcp_path in args:
-                # MCP路径
-                data[mcp_path] = args[mcp_path]
+            # 获取参数值
+            value = args.get(field_name)
+            if value is None and default_value:
+                value = default_value
+            
+            if value is not None and param_location in parts:
+                parts[param_location][field_name] = value
         
-        return data
+        return parts
 
 
 # 全局单例

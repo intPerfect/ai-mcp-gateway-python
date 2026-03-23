@@ -1,5 +1,5 @@
 """
-Session domain models
+Session domain models v3.0
 """
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -9,7 +9,7 @@ import asyncio
 
 @dataclass
 class SessionConfig:
-    """Session configuration"""
+    """会话配置"""
     session_id: str
     gateway_id: str
     api_key: str
@@ -19,22 +19,22 @@ class SessionConfig:
     message_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     
     def update_last_accessed(self):
-        """Update last accessed timestamp"""
+        """更新最后访问时间"""
         self.last_accessed = datetime.now()
     
     def is_expired(self, timeout_minutes: int) -> bool:
-        """Check if session is expired"""
+        """检查会话是否过期"""
         elapsed = (datetime.now() - self.last_accessed).total_seconds() / 60
         return elapsed > timeout_minutes
     
     def mark_inactive(self):
-        """Mark session as inactive"""
+        """标记会话为非活跃"""
         self.is_active = False
 
 
 @dataclass
 class HandleMessageCommand:
-    """Command for handling messages"""
+    """消息处理命令"""
     gateway_id: str
     api_key: str
     session_id: str
@@ -43,7 +43,7 @@ class HandleMessageCommand:
 
 @dataclass
 class GatewayConfig:
-    """Gateway configuration"""
+    """网关配置"""
     gateway_id: str
     gateway_name: str
     gateway_desc: Optional[str]
@@ -52,7 +52,7 @@ class GatewayConfig:
 
 @dataclass
 class ToolConfig:
-    """Tool configuration"""
+    """工具配置"""
     gateway_id: str
     tool_id: int
     tool_name: str
@@ -64,20 +64,31 @@ class ToolConfig:
 
 @dataclass
 class ProtocolMapping:
-    """Protocol mapping configuration"""
-    mapping_type: str
-    parent_path: Optional[str]
+    """
+    协议参数映射
+    
+    param_location 参数位置:
+    - path: 路径参数，替换URL中的{param}
+    - query: 查询参数
+    - body: JSON请求体参数
+    - form: 表单参数
+    - header: HTTP头部参数
+    - file: 文件上传参数
+    """
+    param_location: str  # path/query/body/form/header/file
     field_name: str
-    mcp_path: str
-    mcp_type: str
-    mcp_desc: Optional[str]
+    field_type: str
+    field_desc: str
     is_required: int
-    sort_order: int
+    default_value: Optional[str] = None
+    enum_values: Optional[str] = None
+    example_value: Optional[str] = None
+    sort_order: int = 0
 
 
 @dataclass
 class HttpConfig:
-    """HTTP protocol configuration"""
+    """HTTP协议配置"""
     http_url: str
     http_method: str
     http_headers: Optional[str]
@@ -86,6 +97,6 @@ class HttpConfig:
 
 @dataclass
 class ToolProtocolConfig:
-    """Tool protocol configuration"""
+    """工具协议配置"""
     http_config: Optional[HttpConfig] = None
-    request_mappings: List[ProtocolMapping] = field(default_factory=list)
+    mappings: List[ProtocolMapping] = field(default_factory=list)

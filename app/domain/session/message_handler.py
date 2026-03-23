@@ -1,5 +1,5 @@
 """
-MCP Message Handler - Handles JSON-RPC messages for MCP protocol
+MCP Message Handler - Handles JSON-RPC messages for MCP protocol v3.0
 """
 import json
 import logging
@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 JSONRPC_VERSION = "2.0"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
-# MCP Error codes
+
 class McpErrorCodes:
+    """MCP错误码"""
     PARSE_ERROR = -32700
     INVALID_REQUEST = -32600
     METHOD_NOT_FOUND = -32601
@@ -32,32 +33,23 @@ class McpErrorCodes:
 
 
 class MessageHandler:
-    """Handler for MCP JSON-RPC messages"""
+    """MCP JSON-RPC消息处理器"""
     
     def __init__(self, session: AsyncSession):
         self.repository = McpGatewayRepository(session)
         self.http_gateway = HttpGateway()
     
     async def handle(self, gateway_id: str, message_body: str) -> Dict[str, Any]:
-        """
-        Handle incoming JSON-RPC message
-        
-        Args:
-            gateway_id: Gateway identifier
-            message_body: Raw JSON-RPC message
-            
-        Returns:
-            JSON-RPC response
-        """
+        """处理JSON-RPC消息"""
         try:
             message = json.loads(message_body)
             method = message.get("method", "")
             msg_id = message.get("id")
             params = message.get("params", {})
             
-            logger.info(f"Handling message: method={method}, id={msg_id}")
+            logger.info(f"处理消息: method={method}, id={msg_id}")
             
-            # Route to appropriate handler
+            # 路由到对应的处理器
             if method == "initialize":
                 return await self._handle_initialize(gateway_id, msg_id, params)
             elif method == "notifications/initialized":
@@ -78,10 +70,10 @@ class MessageHandler:
                 )
                 
         except json.JSONDecodeError as e:
-            logger.error(f"JSON parse error: {e}")
+            logger.error(f"JSON解析错误: {e}")
             return self._error_response(None, McpErrorCodes.PARSE_ERROR, str(e))
         except Exception as e:
-            logger.error(f"Error handling message: {e}", exc_info=True)
+            logger.error(f"消息处理错误: {e}", exc_info=True)
             return self._error_response(
                 message.get("id") if 'message' in dir() else None,
                 McpErrorCodes.INTERNAL_ERROR,
@@ -89,8 +81,7 @@ class MessageHandler:
             )
     
     async def _handle_initialize(self, gateway_id: str, msg_id: Any, params: Dict) -> Dict:
-        """Handle initialize request"""
-        # Get gateway config
+        """处理初始化请求"""
         gateway = await self.repository.get_gateway_by_id(gateway_id)
         
         server_name = "Python MCP Gateway"
@@ -117,8 +108,7 @@ class MessageHandler:
         }
     
     async def _handle_initialized(self, msg_id: Any) -> Dict:
-        """Handle initialized notification"""
-        # This is a notification, no response needed but we return empty for consistency
+        """处理初始化完成通知"""
         return {
             "jsonrpc": JSONRPC_VERSION,
             "id": msg_id,
@@ -126,7 +116,7 @@ class MessageHandler:
         }
     
     async def _handle_ping(self, msg_id: Any) -> Dict:
-        """Handle ping request"""
+        """处理ping请求"""
         return {
             "jsonrpc": JSONRPC_VERSION,
             "id": msg_id,
@@ -134,15 +124,12 @@ class MessageHandler:
         }
     
     async def _handle_tools_list(self, gateway_id: str, msg_id: Any, params: Dict) -> Dict:
-        """Handle tools/list request - Return list of available tools"""
+        """处理工具列表请求"""
         tools = await self.repository.get_tools_by_gateway_id(gateway_id)
         
         tool_list = []
         for tool in tools:
-            # Get protocol mappings
-            mappings = await self.repository.get_protocol_mappings(tool.protocol_id, "request")
-            
-            # Build input schema
+            mappings = await self.repository.get_protocol_mappings(tool.protocol_id)
             input_schema = self._build_input_schema(mappings)
             
             tool_list.append({
@@ -160,7 +147,7 @@ class MessageHandler:
         }
     
     async def _handle_tools_call(self, gateway_id: str, msg_id: Any, params: Dict) -> Dict:
-        """Handle tools/call request - Execute a tool"""
+        """处理工具调用请求"""
         try:
             tool_name = params.get("name")
             arguments = params.get("arguments", {})
@@ -168,12 +155,10 @@ class MessageHandler:
             if not tool_name:
                 return self._error_response(msg_id, McpErrorCodes.INVALID_PARAMS, "Tool name is required")
             
-            # Get tool configuration
             tool = await self.repository.get_tool_by_name(gateway_id, tool_name)
             if not tool:
                 return self._error_response(msg_id, McpErrorCodes.METHOD_NOT_FOUND, f"Tool not found: {tool_name}")
             
-            # Get HTTP protocol config
             http_protocol = await self.repository.get_protocol_http_by_id(tool.protocol_id)
             if not http_protocol:
                 return self._error_response(msg_id, McpErrorCodes.INTERNAL_ERROR, "Protocol configuration not found")
@@ -185,7 +170,6 @@ class MessageHandler:
                 timeout=http_protocol.timeout
             )
             
-            # Call the tool
             result = await self.http_gateway.call(http_config, arguments)
             
             return {
@@ -203,11 +187,11 @@ class MessageHandler:
             }
             
         except Exception as e:
-            logger.error(f"Error calling tool: {e}", exc_info=True)
+            logger.error(f"工具调用错误: {e}", exc_info=True)
             return self._error_response(msg_id, McpErrorCodes.INVALID_PARAMS, str(e))
     
     async def _handle_resources_list(self, msg_id: Any, params: Dict) -> Dict:
-        """Handle resources/list request"""
+        """处理资源列表请求"""
         return {
             "jsonrpc": JSONRPC_VERSION,
             "id": msg_id,
@@ -217,75 +201,61 @@ class MessageHandler:
         }
     
     def _build_input_schema(self, mappings: List) -> Dict:
-        """Build JSON Schema from protocol mappings"""
+        """
+        构建JSON Schema
+        
+        param_location: path/query/body/form/header/file
+        - path参数不包含在input schema中（从URL模板解析）
+        """
         if not mappings:
             return {"type": "object", "properties": {}, "required": []}
         
-        # Sort by sort_order
-        sorted_mappings = sorted(mappings, key=lambda x: x.sort_order or 0)
+        # 过滤：排除path参数
+        input_mappings = [
+            m for m in mappings 
+            if m.param_location != "path"
+        ]
         
-        # Build parent-children map
-        children_map: Dict[str, List] = {}
-        roots = []
+        # 按sort_order排序
+        sorted_mappings = sorted(input_mappings, key=lambda x: x.sort_order or 0)
         
-        for mapping in sorted_mappings:
-            if mapping.parent_path is None:
-                roots.append(mapping)
-            else:
-                if mapping.parent_path not in children_map:
-                    children_map[mapping.parent_path] = []
-                children_map[mapping.parent_path].append(mapping)
-        
-        # Build schema
         properties = {}
         required = []
         
-        for root in roots:
-            properties[root.field_name] = self._build_property(root, children_map)
-            if root.is_required == 1:
-                required.append(root.field_name)
-        
-        # Determine type
-        schema_type = roots[0].mcp_type if len(roots) == 1 else "object"
+        for mapping in sorted_mappings:
+            prop = {"type": mapping.field_type}
+            
+            # 添加描述
+            if mapping.field_desc:
+                prop["description"] = mapping.field_desc
+            
+            # 添加枚举值
+            if mapping.enum_values:
+                try:
+                    import json
+                    enum_list = json.loads(mapping.enum_values)
+                    prop["enum"] = enum_list
+                except:
+                    pass
+            
+            # 添加默认值
+            if mapping.default_value:
+                prop["default"] = mapping.default_value
+            
+            properties[mapping.field_name] = prop
+            
+            if mapping.is_required == 1:
+                required.append(mapping.field_name)
         
         return {
-            "type": schema_type,
+            "type": "object",
             "properties": properties,
             "required": required if required else None,
             "additionalProperties": False
         }
     
-    def _build_property(self, mapping, children_map: Dict) -> Dict:
-        """Build property schema recursively"""
-        prop = {
-            "type": mapping.mcp_type
-        }
-        
-        if mapping.mcp_desc:
-            prop["description"] = mapping.mcp_desc
-        
-        # Check for children
-        children = children_map.get(mapping.mcp_path, [])
-        if children:
-            # Sort children
-            children = sorted(children, key=lambda x: x.sort_order or 0)
-            
-            props = {}
-            reqs = []
-            
-            for child in children:
-                props[child.field_name] = self._build_property(child, children_map)
-                if child.is_required == 1:
-                    reqs.append(child.field_name)
-            
-            prop["properties"] = props
-            if reqs:
-                prop["required"] = reqs
-        
-        return prop
-    
     def _error_response(self, msg_id: Any, code: int, message: str) -> Dict:
-        """Create error response"""
+        """创建错误响应"""
         return {
             "jsonrpc": JSONRPC_VERSION,
             "id": msg_id,

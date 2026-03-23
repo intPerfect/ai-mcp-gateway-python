@@ -307,9 +307,8 @@ class LLMService:
             if tools_enabled:
                 tools = self.get_tools()
                 request_kwargs["tools"] = tools
-                logger.info(f"启用工具调用，发送 {len(tools)} 个工具定义到 MiniMax")
-                for tool in tools:
-                    logger.info(f"  - 工具: {tool.get('name')}")
+                tool_names = [t.get('name') for t in tools]
+                logger.info(f"启用工具调用，发送 {len(tools)} 个工具: {', '.join(tool_names)}")
             else:
                 logger.info("工具调用已禁用")
 

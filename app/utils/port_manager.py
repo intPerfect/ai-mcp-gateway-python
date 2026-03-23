@@ -14,44 +14,84 @@ logger = logging.getLogger(__name__)
 
 class PortManager:
     """端口管理器"""
-    
+
     @staticmethod
-    def kill_port(port: int) -> bool:
+    def kill_port(port: int, timeout: int = 5) -> bool:
         """
         终止占用指定端口的进程（Windows）
         
         Args:
             port: 端口号
+            timeout: 超时时间（秒）
             
         Returns:
             是否成功终止
         """
         try:
+            # 获取占用端口的PID
             result = subprocess.run(
-                f'powershell -Command "'
-                f'Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue '
-                f'| ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"',
+                f'netstat -ano | findstr ":{port} "',
                 shell=True,
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=timeout
             )
+            
+            lines = result.stdout.strip().split('\n')
+            pids = set()
+            
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 5:
+                    try:
+                        pid = int(parts[-1])
+                        if pid > 0:
+                            pids.add(pid)
+                    except ValueError:
+                        continue
+            
+            if not pids:
+                logger.info(f"端口 {port} 未被占用")
+                return True
+            
+            # 杀掉所有相关进程
+            for pid in pids:
+                subprocess.run(
+                    f'taskkill /F /PID {pid}',
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+            
             logger.info(f"已清理端口 {port}")
             return True
+            
+        except subprocess.TimeoutExpired:
+            logger.warning(f"端口 {port} 清理超时")
+            return False
         except Exception as e:
             logger.error(f"清理端口 {port} 失败: {e}")
             return False
-    
+
+    @staticmethod
+    def is_port_in_use(port: int) -> bool:
+        """检查端口是否被占用"""
+        try:
+            result = subprocess.run(
+                f'netstat -ano | findstr ":{port} "',
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return bool(result.stdout.strip())
+        except Exception:
+            return False
+
     @staticmethod
     def kill_ports(ports: List[int]) -> dict:
-        """
-        终止占用多个端口的进程
-        
-        Args:
-            ports: 端口号列表
-            
-        Returns:
-            {"success": [...], "failed": [...]}
-        """
+        """终止占用多个端口的进程"""
         result = {"success": [], "failed": []}
         for port in ports:
             if PortManager.kill_port(port):
@@ -59,93 +99,41 @@ class PortManager:
             else:
                 result["failed"].append(port)
         return result
-    
-    @staticmethod
-    def is_port_in_use(port: int) -> bool:
-        """
-        检查端口是否被占用
-        
-        Args:
-            port: 端口号
-            
-        Returns:
-            端口是否被占用
-        """
-        try:
-            result = subprocess.run(
-                f'powershell -Command "'
-                f'Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue"',
-                shell=True,
-                capture_output=True,
-                text=True
-            )
-            return bool(result.stdout.strip())
-        except Exception:
-            return False
-    
+
     @staticmethod
     def wait_for_port_free(port: int, timeout: int = 10) -> bool:
-        """
-        等待端口释放
-        
-        Args:
-            port: 端口号
-            timeout: 超时时间（秒）
-            
-        Returns:
-            端口是否已释放
-        """
+        """等待端口释放"""
         start_time = time.time()
         while time.time() - start_time < timeout:
             if not PortManager.is_port_in_use(port):
                 return True
             time.sleep(0.5)
         return False
-    
+
     @staticmethod
     def get_port_process(port: int) -> Optional[dict]:
-        """
-        获取占用端口的进程信息
-        
-        Args:
-            port: 端口号
-            
-        Returns:
-            进程信息字典或 None
-        """
+        """获取占用端口的进程信息"""
         try:
             result = subprocess.run(
-                f'powershell -Command "'
-                f'Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue '
-                f'| Select-Object OwningProcess, State, LocalAddress '
-                f'| ConvertTo-Json"',
+                f'netstat -ano | findstr ":{port} "',
                 shell=True,
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=5
             )
             if result.stdout.strip():
-                import json
-                data = json.loads(result.stdout)
-                if isinstance(data, list) and data:
-                    return data[0]
-                elif isinstance(data, dict):
-                    return data
+                lines = result.stdout.strip().split('\n')
+                if lines:
+                    parts = lines[0].split()
+                    if len(parts) >= 5:
+                        return {"pid": int(parts[-1]), "state": parts[3] if len(parts) > 3 else "unknown"}
         except Exception as e:
             logger.error(f"获取端口 {port} 进程信息失败: {e}")
         return None
 
 
 def kill_port_and_wait(port: int, wait_seconds: int = 2) -> bool:
-    """
-    终止端口进程并等待释放
-    
-    Args:
-        port: 端口号
-        wait_seconds: 等待时间
-        
-    Returns:
-        是否成功
-    """
+    """终止端口进程并等待释放"""
     PortManager.kill_port(port)
     time.sleep(wait_seconds)
     return not PortManager.is_port_in_use(port)
