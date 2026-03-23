@@ -205,16 +205,13 @@ class MessageHandler:
         构建JSON Schema
         
         param_location: path/query/body/form/header/file
-        - path参数不包含在input schema中（从URL模板解析）
+        - 包含所有参数（path参数用于替换URL模板中的占位符）
         """
         if not mappings:
             return {"type": "object", "properties": {}, "required": []}
         
-        # 过滤：排除path参数
-        input_mappings = [
-            m for m in mappings 
-            if m.param_location != "path"
-        ]
+        # 不过滤path参数，LLM需要知道所有需要传递的参数
+        input_mappings = mappings
         
         # 按sort_order排序
         sorted_mappings = sorted(input_mappings, key=lambda x: x.sort_order or 0)

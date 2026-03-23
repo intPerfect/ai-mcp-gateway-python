@@ -69,3 +69,75 @@ async def reload_tools(
         "info": "success",
         "data": result
     }
+
+
+@router.get("/tools/{tool_name}/status")
+async def get_tool_status(tool_name: str):
+    """获取单个工具的详细状态"""
+    try:
+        tool = mcp_tool_registry.get_tool(tool_name)
+        if not tool:
+            return {"code": "NOT_FOUND", "info": f"工具不存在: {tool_name}"}
+
+        statuses = {s.name: s for s in mcp_tool_registry.get_tool_statuses()}
+        status = statuses.get(tool_name)
+
+        return {
+            "code": "0000",
+            "info": "success",
+            "data": {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+                "status": status.status if status else "unknown",
+                "http_url": status.http_url if status else "",
+                "error": status.error if status else None,
+            },
+        }
+    except Exception as e:
+        logger.error(f"获取工具状态失败: {str(e)}")
+        return {"code": "INTERNAL_ERROR", "info": str(e)}
+
+
+@router.post("/tools/{tool_name}/health-check")
+async def health_check_tool(
+    tool_name: str,
+    db: AsyncSession = Depends(get_db_session)
+):
+    """对指定工具进行健康检查"""
+    try:
+        from app.infrastructure.database import McpGatewayRepository
+
+        repository = McpGatewayRepository(db)
+        tool = await repository.get_tool_by_name("gateway_001", tool_name)
+
+        if not tool:
+            return {"code": "NOT_FOUND", "info": f"工具不存在: {tool_name}"}
+
+        http_config = await repository.get_protocol_http_by_id(tool.protocol_id)
+        if not http_config:
+            return {"code": "NOT_FOUND", "info": "HTTP配置不存在"}
+
+        is_healthy, message = await mcp_tool_registry.health_check(
+            http_config.http_url,
+            http_config.timeout
+        )
+
+        # 更新状态
+        statuses = {s.name: s for s in mcp_tool_registry.get_tool_statuses()}
+        if tool_name in statuses:
+            statuses[tool_name].status = "healthy" if is_healthy else "unhealthy"
+            statuses[tool_name].error = None if is_healthy else message
+
+        return {
+            "code": "0000",
+            "info": "success",
+            "data": {
+                "name": tool_name,
+                "healthy": is_healthy,
+                "message": message,
+            },
+        }
+    except Exception as e:
+        logger.error(f"健康检查失败: {str(e)}")
+        return {"code": "INTERNAL_ERROR", "info": str(e)}

@@ -9,6 +9,22 @@ from sqlalchemy import Column, BigInteger, String, Text, Integer, SmallInteger, 
 from app.infrastructure.database.connection import Base
 
 
+class McpMicroservice(Base):
+    """MCP微服务配置"""
+    __tablename__ = "mcp_microservice"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(128), unique=True, nullable=False)
+    http_base_url = Column(String(512), nullable=False)
+    description = Column(String(512), nullable=True)
+    business_line = Column(String(128), nullable=True)
+    health_status = Column(String(16), default='unknown')
+    last_check_time = Column(DateTime, nullable=True)
+    status = Column(SmallInteger, nullable=False, default=1)
+    create_time = Column(DateTime, default=datetime.now)
+    update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class McpGateway(Base):
     """MCP网关配置"""
     __tablename__ = "mcp_gateway"
@@ -52,6 +68,13 @@ class McpGatewayTool(Base):
     tool_version = Column(String(16), nullable=False, default='1.0.0')
     protocol_id = Column(BigInteger, nullable=False)
     protocol_type = Column(String(16), nullable=False, default='http')
+    microservice_id = Column(BigInteger, nullable=True)
+    enabled = Column(SmallInteger, nullable=False, default=1)
+    call_status = Column(String(16), default='sunny')
+    last_call_time = Column(DateTime, nullable=True)
+    last_call_code = Column(String(32), nullable=True)
+    call_count = Column(Integer, default=0)
+    error_count = Column(Integer, default=0)
     create_time = Column(DateTime, default=datetime.now)
     update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

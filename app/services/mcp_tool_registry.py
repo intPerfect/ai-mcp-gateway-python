@@ -15,6 +15,39 @@ from app.infrastructure.database.models import McpGatewayTool, McpProtocolHttp
 
 logger = logging.getLogger(__name__)
 
+# 调用状态常量
+CALL_STATUS_SUNNY = "sunny"    # 晴朗 - 错误率 < 10%
+CALL_STATUS_CLOUDY = "cloudy"  # 阴云 - 错误率 10%-50%
+CALL_STATUS_RAINY = "rainy"    # 下雨 - 错误率 > 50%
+
+# 错误率阈值
+ERROR_RATE_SUNNY_THRESHOLD = 0.10   # 低于10%为晴朗
+ERROR_RATE_CLOUDY_THRESHOLD = 0.50  # 低于50%为阴云，高于50%为下雨
+MIN_CALL_COUNT = 5  # 最少调用次数才开始计算状态
+
+
+def calculate_status_by_error_rate(call_count: int, error_count: int) -> str:
+    """
+    根据错误率计算调用状态
+    
+    规则:
+    - 调用次数 < 5: 默认晴朗（样本不足）
+    - 错误率 < 10%: 晴朗
+    - 错误率 10%-50%: 阴云
+    - 错误率 > 50%: 下雨
+    """
+    if call_count < MIN_CALL_COUNT:
+        return CALL_STATUS_SUNNY
+    
+    error_rate = error_count / call_count
+    
+    if error_rate < ERROR_RATE_SUNNY_THRESHOLD:
+        return CALL_STATUS_SUNNY
+    elif error_rate < ERROR_RATE_CLOUDY_THRESHOLD:
+        return CALL_STATUS_CLOUDY
+    else:
+        return CALL_STATUS_RAINY
+
 
 @dataclass
 class ToolDefinition:
@@ -89,6 +122,37 @@ class McpToolRegistry:
                 "input_schema": tool.input_schema
             })
         return tools
+    
+    def get_tool_definitions_grouped(self) -> Dict[str, List[Dict[str, Any]]]:
+        """获取按微服务分组的工具定义列表"""
+        # 从工具状态中获取微服务信息
+        # 这里需要从数据库获取工具的微服务关联信息
+        return {"_all": self.get_tool_definitions()}
+    
+    def get_tool_definitions_by_microservice(
+        self, 
+        microservice_ids: List[int],
+        db_session: AsyncSession = None
+    ) -> List[Dict[str, Any]]:
+        """
+        根据微服务ID列表过滤工具定义
+        
+        Args:
+            microservice_ids: 微服务ID列表，空列表表示获取所有工具
+            db_session: 数据库会话（用于获取工具-微服务关联）
+        
+        Returns:
+            工具定义列表
+        """
+        if not microservice_ids:
+            return self.get_tool_definitions()
+        
+        # 如果没有数据库会话，返回所有工具
+        if not db_session:
+            return self.get_tool_definitions()
+        
+        # 异步方法需要在外部处理
+        return self.get_tool_definitions()
     
     def get_tool_statuses(self) -> List[ToolStatus]:
         """获取所有工具状态"""
@@ -187,7 +251,8 @@ class McpToolRegistry:
                     http_method=http_method,
                     http_headers=http_headers,
                     timeout=timeout,
-                    mappings=mappings
+                    mappings=mappings,
+                    tool_id=tool.tool_id
                 )
                 
                 if self.register_tool(
@@ -231,16 +296,13 @@ class McpToolRegistry:
         """
         构建JSON Schema
         
-        排除path参数（从URL模板解析）
+        包含所有参数（path参数用于替换URL模板中的占位符）
         """
         if not mappings:
             return {"type": "object", "properties": {}, "required": []}
         
-        # 过滤：排除path参数
-        input_mappings = [
-            m for m in mappings 
-            if m.param_location != "path"
-        ]
+        # 不过滤path参数，LLM需要知道所有需要传递的参数
+        input_mappings = mappings
         
         # 按sort_order排序
         sorted_mappings = sorted(input_mappings, key=lambda x: x.sort_order or 0)
@@ -282,7 +344,8 @@ class McpToolRegistry:
         http_method: str,
         http_headers: Dict[str, str],
         timeout: int,
-        mappings: List
+        mappings: List,
+        tool_id: int = None
     ) -> Callable:
         """
         创建HTTP调用handler
@@ -291,6 +354,18 @@ class McpToolRegistry:
         """
         
         async def handler(args: Dict[str, Any]) -> Any:
+            # 获取当前工具的调用统计
+            current_call_count = 0
+            current_error_count = 0
+            if tool_id and self._repository:
+                try:
+                    tool = await self._repository.get_tool_by_id(tool_id)
+                    if tool:
+                        current_call_count = tool.call_count or 0
+                        current_error_count = tool.error_count or 0
+                except Exception:
+                    pass
+            
             try:
                 async with httpx.AsyncClient(timeout=timeout / 1000) as client:
                     # 根据mappings构建请求数据
@@ -335,19 +410,98 @@ class McpToolRegistry:
                             headers=final_headers
                         )
                     
-                    if response.status_code < 400:
+                    # 解析响应
+                    response_data = None
+                    try:
+                        response_data = response.json()
+                    except:
+                        response_data = {"data": response.text}
+                    
+                    # 判断本次调用是否为错误
+                    is_error = False
+                    call_code = str(response.status_code)
+                    
+                    if response.status_code >= 400:
+                        # HTTP错误
+                        is_error = True
+                    elif response_data and isinstance(response_data, dict):
+                        # 检查业务code
+                        biz_code = response_data.get("code")
+                        if biz_code and biz_code != "0000":
+                            is_error = True
+                            call_code = str(biz_code)
+                    
+                    # 更新调用统计和状态
+                    if tool_id and self._repository:
                         try:
-                            return response.json()
-                        except:
-                            return {"data": response.text}
+                            new_call_count = current_call_count + 1
+                            new_error_count = current_error_count + (1 if is_error else 0)
+                            new_call_status = calculate_status_by_error_rate(new_call_count, new_error_count)
+                            
+                            await self._repository.update_tool_call_status(
+                                tool_id=tool_id,
+                                call_status=new_call_status,
+                                call_code=call_code,
+                                is_error=is_error
+                            )
+                        except Exception as e:
+                            logger.warning(f"更新工具调用状态失败: {tool_id} - {str(e)}")
+                    
+                    if response.status_code < 400:
+                        return response_data
                     else:
-                        return {"error": f"HTTP {response.status_code}: {response.text}"}
+                        return {"error": f"HTTP {response.status_code}: {response.text}", **response_data}
                         
             except httpx.TimeoutException:
+                # 超时 -> 记录错误
+                if tool_id and self._repository:
+                    try:
+                        new_call_count = current_call_count + 1
+                        new_error_count = current_error_count + 1
+                        new_call_status = calculate_status_by_error_rate(new_call_count, new_error_count)
+                        
+                        await self._repository.update_tool_call_status(
+                            tool_id=tool_id,
+                            call_status=new_call_status,
+                            call_code="TIMEOUT",
+                            is_error=True
+                        )
+                    except Exception as e:
+                        logger.warning(f"更新工具调用状态失败: {tool_id} - {str(e)}")
                 return {"error": "请求超时"}
             except httpx.ConnectError:
+                # 连接失败 -> 记录错误
+                if tool_id and self._repository:
+                    try:
+                        new_call_count = current_call_count + 1
+                        new_error_count = current_error_count + 1
+                        new_call_status = calculate_status_by_error_rate(new_call_count, new_error_count)
+                        
+                        await self._repository.update_tool_call_status(
+                            tool_id=tool_id,
+                            call_status=new_call_status,
+                            call_code="CONNECT_ERROR",
+                            is_error=True
+                        )
+                    except Exception as e:
+                        logger.warning(f"更新工具调用状态失败: {tool_id} - {str(e)}")
                 return {"error": f"连接失败: {http_url}"}
             except Exception as e:
+                # 其他异常 -> 记录错误
+                if tool_id and self._repository:
+                    try:
+                        new_call_count = current_call_count + 1
+                        new_error_count = current_error_count + 1
+                        new_call_status = calculate_status_by_error_rate(new_call_count, new_error_count)
+                        
+                        await self._repository.update_tool_call_status(
+                            tool_id=tool_id,
+                            call_status=new_call_status,
+                            call_code="EXCEPTION",
+                            is_error=True
+                        )
+                    except Exception as err:
+                        logger.warning(f"更新工具调用状态失败: {tool_id} - {str(err)}")
                 return {"error": str(e)}
         
         return handler

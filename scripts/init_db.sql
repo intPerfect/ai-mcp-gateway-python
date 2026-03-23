@@ -11,8 +11,27 @@ USE `ai_mcp_gateway_v2`;
 DROP TABLE IF EXISTS `mcp_protocol_mapping`;
 DROP TABLE IF EXISTS `mcp_protocol_http`;
 DROP TABLE IF EXISTS `mcp_gateway_tool`;
+DROP TABLE IF EXISTS `mcp_microservice`;
 DROP TABLE IF EXISTS `mcp_gateway_auth`;
 DROP TABLE IF EXISTS `mcp_gateway`;
+
+-- ============================================
+-- MCP 微服务表
+-- ============================================
+CREATE TABLE `mcp_microservice` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `name` varchar(128) NOT NULL COMMENT '微服务名称',
+  `http_base_url` varchar(512) NOT NULL COMMENT 'HTTP基础URL',
+  `description` varchar(512) DEFAULT NULL COMMENT '服务描述',
+  `business_line` varchar(128) DEFAULT NULL COMMENT '业务线',
+  `health_status` varchar(16) DEFAULT 'unknown' COMMENT '健康状态: healthy/unhealthy/unknown',
+  `last_check_time` datetime DEFAULT NULL COMMENT '最后检查时间',
+  `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MCP微服务配置';
 
 CREATE TABLE `mcp_gateway` (
   `id` bigint NOT NULL AUTO_INCREMENT,
@@ -59,12 +78,20 @@ CREATE TABLE `mcp_gateway_tool` (
   `tool_version` varchar(16) NOT NULL DEFAULT '1.0.0' COMMENT '版本号',
   `protocol_id` bigint NOT NULL COMMENT '协议配置ID',
   `protocol_type` varchar(16) NOT NULL DEFAULT 'http' COMMENT '协议类型: http',
+  `microservice_id` bigint DEFAULT NULL COMMENT '关联微服务ID',
+  `enabled` tinyint(1) NOT NULL DEFAULT 1 COMMENT '启用状态: 0-禁用 1-启用',
+  `call_status` varchar(16) DEFAULT 'sunny' COMMENT '调用状态(天气): sunny(晴朗)/cloudy(阴云)/rainy(下雨)',
+  `last_call_time` datetime DEFAULT NULL COMMENT '最后调用时间',
+  `last_call_code` varchar(32) DEFAULT NULL COMMENT '最后调用返回码(http状态码或业务code)',
+  `call_count` int DEFAULT 0 COMMENT '调用次数',
+  `error_count` int DEFAULT 0 COMMENT '错误次数',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_tool_name` (`gateway_id`, `tool_name`),
   UNIQUE KEY `uk_tool_id` (`tool_id`),
-  KEY `idx_gateway_id` (`gateway_id`)
+  KEY `idx_gateway_id` (`gateway_id`),
+  KEY `idx_microservice_id` (`microservice_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MCP工具配置';
 
 -- ============================================

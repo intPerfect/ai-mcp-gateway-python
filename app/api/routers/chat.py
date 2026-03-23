@@ -14,6 +14,7 @@ from app.services.mcp_tool_registry import mcp_tool_registry
 from app.services.conversation_logger import conversation_logger
 from app.services.websocket_protocol import WSEventFactory
 from app.infrastructure.database import async_session_factory
+from app.infrastructure.database.repository import McpGatewayRepository
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +111,10 @@ async def websocket_handler(websocket):
     )
     
     try:
-        # 发送欢迎消息
+        # 获取带 microservice_name 的工具列表
+        tools_with_ms = await get_tools_with_microservice()
         await websocket.send_json(
-            WSEventFactory.welcome(session_id, mcp_tool_registry.get_tool_definitions())
+            WSEventFactory.welcome(session_id, tools_with_ms)
         )
         
         # 主消息循环
@@ -176,4 +178,28 @@ async def load_tools_from_db(gateway_id: str = "gateway_001"):
     """从数据库加载工具"""
     async with async_session_factory() as session:
         result = await mcp_tool_registry.load_tools_from_db(session, gateway_id)
+        return result
+
+
+async def get_tools_with_microservice() -> list:
+    """获取带 microservice_name 的工具列表"""
+    async with async_session_factory() as session:
+        repo = McpGatewayRepository(session)
+        all_tools = await repo.get_all_tools()
+        enabled_tools = [t for t in all_tools if t.enabled == 1]
+        all_microservices = await repo.get_all_microservices()
+        ms_map = {ms.id: ms.name for ms in all_microservices}
+        
+        result = []
+        for tool in enabled_tools:
+            if not tool.microservice_id or tool.microservice_id not in ms_map:
+                continue
+            tool_def = mcp_tool_registry.get_tool(tool.tool_name)
+            if tool_def:
+                result.append({
+                    "name": tool_def.name,
+                    "description": tool_def.description,
+                    "input_schema": tool_def.input_schema,
+                    "microservice_name": ms_map[tool.microservice_id],
+                })
         return result
