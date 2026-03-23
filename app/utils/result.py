@@ -257,9 +257,9 @@ class Result(BaseModel, Generic[T]):
         return self.code != ResultCode.SUCCESS.code
 
 
-class PageResult(Result[List[T]]):
+class PageResult(BaseModel, Generic[T]):
     """
-    分页结果封装
+    分页结果封装（独立类，避免继承导致的字段遮蔽警告）
     
     Attributes:
         code: 状态码
@@ -269,9 +269,17 @@ class PageResult(Result[List[T]]):
         page: 当前页码
         size: 每页数量
     """
+    code: str = ResultCode.SUCCESS.code
+    info: str = ResultCode.SUCCESS.message
+    data: Optional[List[T]] = None
     total: int = 0
     page: int = 1
     size: int = 20
+    
+    model_config = {
+        "populate_by_name": True,
+        "by_alias": False
+    }
     
     @classmethod
     def of(
@@ -295,20 +303,27 @@ class PageResult(Result[List[T]]):
         Returns:
             PageResult实例
         """
-        result = cls(
+        return cls(
             code=ResultCode.SUCCESS.code,
             info=message or ResultCode.SUCCESS.message,
-            data=data or []
+            data=data or [],
+            total=total,
+            page=page,
+            size=size
         )
-        result.total = total
-        result.page = page
-        result.size = size
-        return result
     
     @property
     def pages(self) -> int:
         """总页数"""
         return (self.total + self.size - 1) // self.size if self.size > 0 else 0
+    
+    def is_success(self) -> bool:
+        """判断是否成功"""
+        return self.code == ResultCode.SUCCESS.code
+    
+    def is_error(self) -> bool:
+        """判断是否失败"""
+        return self.code != ResultCode.SUCCESS.code
 
 
 __all__ = [

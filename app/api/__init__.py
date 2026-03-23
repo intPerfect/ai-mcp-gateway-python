@@ -11,8 +11,6 @@ from app.api.routers import (
     microservice_router,
 )
 from app.api.schemas import (
-    Response,
-    ErrorResponse,
     JSONRPCRequest,
     JSONRPCResponse,
     Tool,
@@ -26,8 +24,6 @@ __all__ = [
     "openapi_router",
     "apikeys_router",
     "microservice_router",
-    "Response",
-    "ErrorResponse",
     "JSONRPCRequest",
     "JSONRPCResponse",
     "Tool",

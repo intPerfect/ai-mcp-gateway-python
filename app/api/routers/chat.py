@@ -12,7 +12,7 @@ from app.domain.session.service import ws_session_manager, PendingSession
 from app.services.react_agent import react_agent, AgentSession
 from app.services.mcp_tool_registry import mcp_tool_registry
 from app.services.conversation_logger import conversation_logger
-from app.services.websocket_protocol import WSEventFactory
+from app.domain.protocol.websocket import WSEventFactory
 from app.infrastructure.database import async_session_factory
 from app.infrastructure.database.repository import McpGatewayRepository
 
@@ -38,10 +38,28 @@ async def create_chat_session(request: SessionRequest):
     if not request.llm_key:
         raise HTTPException(status_code=400, detail="LLM API Key 不能为空")
     
+    # 必须选择至少一个微服务
+    if not request.microservice_ids or len(request.microservice_ids) == 0:
+        raise HTTPException(status_code=400, detail="请选择至少一个微服务")
+    
+    # 验证所选微服务是否有效
+    if request.microservice_ids:
+        async with async_session_factory() as session:
+            repo = McpGatewayRepository(session)
+            microservices = await repo.get_all_microservices()
+            valid_ids = {ms.id for ms in microservices}
+            invalid_ids = [mid for mid in request.microservice_ids if mid not in valid_ids]
+            if invalid_ids:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"无效的微服务ID: {invalid_ids}"
+                )
+    
     # 创建待连接会话
     session_id = ws_session_manager.create_pending_session(
         gateway_key=request.gateway_key,
-        llm_key=request.llm_key
+        llm_key=request.llm_key,
+        microservice_ids=request.microservice_ids
     )
     
     # 返回 WebSocket URL
@@ -82,7 +100,8 @@ async def websocket_handler(websocket):
     
     gateway_key = pending.gateway_key
     llm_key = pending.llm_key
-    logger.info(f"WebSocket 连接已接受：{session_id}")
+    microservice_ids = pending.microservice_ids
+    logger.info(f"WebSocket 连接已接受：{session_id}, 微服务筛选: {microservice_ids}")
     
     # 确保工具已加载
     tool_count = len(mcp_tool_registry.get_tool_definitions())
@@ -111,8 +130,8 @@ async def websocket_handler(websocket):
     )
     
     try:
-        # 获取带 microservice_name 的工具列表
-        tools_with_ms = await get_tools_with_microservice()
+        # 获取带 microservice_name 的工具列表（根据选择的微服务筛选）
+        tools_with_ms = await get_tools_with_microservice(microservice_ids)
         await websocket.send_json(
             WSEventFactory.welcome(session_id, tools_with_ms)
         )
@@ -181,8 +200,13 @@ async def load_tools_from_db(gateway_id: str = "gateway_001"):
         return result
 
 
-async def get_tools_with_microservice() -> list:
-    """获取带 microservice_name 的工具列表"""
+async def get_tools_with_microservice(microservice_ids: list = None) -> list:
+    """
+    获取带 microservice_name 的工具列表
+    
+    Args:
+        microservice_ids: 可选，筛选指定微服务的工具。为 None 时返回所有工具
+    """
     async with async_session_factory() as session:
         repo = McpGatewayRepository(session)
         all_tools = await repo.get_all_tools()
@@ -192,8 +216,14 @@ async def get_tools_with_microservice() -> list:
         
         result = []
         for tool in enabled_tools:
+            # 过滤：必须有微服务绑定
             if not tool.microservice_id or tool.microservice_id not in ms_map:
                 continue
+            
+            # 如果指定了微服务筛选，只返回选中微服务的工具
+            if microservice_ids and tool.microservice_id not in microservice_ids:
+                continue
+            
             tool_def = mcp_tool_registry.get_tool(tool.tool_name)
             if tool_def:
                 result.append({
@@ -202,4 +232,6 @@ async def get_tools_with_microservice() -> list:
                     "input_schema": tool_def.input_schema,
                     "microservice_name": ms_map[tool.microservice_id],
                 })
+        
+        logger.info(f"加载工具: {len(result)} 个, 筛选微服务: {microservice_ids}")
         return result

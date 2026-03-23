@@ -6,29 +6,13 @@ LLM Service - 大模型调用服务 (Anthropic兼容)
 import json
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional, Callable, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator
 import anthropic
 from app.config import get_settings
-from app.services.mcp_tool_registry import mcp_tool_registry, ToolDefinition
+from app.services.mcp_tool_registry import mcp_tool_registry
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-
-class Tool:
-    """工具定义（保留兼容性）"""
-
-    def __init__(
-        self,
-        name: str,
-        description: str,
-        input_schema: Dict[str, Any],
-        handler: Callable,
-    ):
-        self.name = name
-        self.description = description
-        self.input_schema = input_schema
-        self.handler = handler
 
 
 class LLMService:
@@ -38,18 +22,96 @@ class LLMService:
         self.base_url = "https://api.minimaxi.com/anthropic"
         self.model = settings.llm_model
 
-    def register_tool(self, tool: Tool):
-        """注册工具（委托给mcp_tool_registry）"""
-        mcp_tool_registry.register_tool(
-            name=tool.name,
-            description=tool.description,
-            input_schema=tool.input_schema,
-            handler=tool.handler,
-        )
-
     def get_tools(self) -> List[Dict[str, Any]]:
         """获取所有工具定义（从mcp_tool_registry获取）"""
         return mcp_tool_registry.get_tool_definitions()
+
+    def _convert_to_anthropic_messages(
+        self,
+        messages: List[Dict[str, Any]]
+    ) -> tuple:
+        """
+        转换消息为 Anthropic API 格式
+
+        Args:
+            messages: 原始消息列表
+
+        Returns:
+            Tuple[str, List]: (system_prompt, anthropic_messages)
+        """
+        anthropic_messages = []
+        system_prompt = ""
+
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+
+            if role == "system":
+                system_prompt = (
+                    content if isinstance(content, str) else str(content)
+                )
+            elif role == "user":
+                if isinstance(content, str):
+                    anthropic_messages.append(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": content}],
+                        }
+                    )
+                else:
+                    anthropic_messages.append({"role": "user", "content": content})
+            elif role == "assistant":
+                if isinstance(content, str):
+                    anthropic_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": content}],
+                        }
+                    )
+                else:
+                    assistant_content = []
+                    tool_result_content = []
+                    for block in content:
+                        if isinstance(block, dict):
+                            block_type = block.get("type")
+                            if block_type == "thinking":
+                                assistant_content.append(
+                                    {
+                                        "type": "thinking",
+                                        "thinking": block.get("thinking", ""),
+                                    }
+                                )
+                            elif block_type == "text":
+                                assistant_content.append(
+                                    {"type": "text", "text": block.get("text", "")}
+                                )
+                            elif block_type == "tool_use":
+                                assistant_content.append(
+                                    {
+                                        "type": "tool_use",
+                                        "id": block.get("id", ""),
+                                        "name": block.get("name", ""),
+                                        "input": block.get("input", {}),
+                                    }
+                                )
+                            elif block_type == "tool_result":
+                                tool_result_content.append(
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": block.get("tool_use_id", ""),
+                                        "content": block.get("content", ""),
+                                    }
+                                )
+                    if assistant_content:
+                        anthropic_messages.append(
+                            {"role": "assistant", "content": assistant_content}
+                        )
+                    if tool_result_content:
+                        anthropic_messages.append(
+                            {"role": "user", "content": tool_result_content}
+                        )
+
+        return system_prompt, anthropic_messages
 
     async def chat(
         self,
@@ -74,79 +136,7 @@ class LLMService:
             )
 
             # 转换消息格式
-            anthropic_messages = []
-            system_prompt = ""
-
-            for msg in messages:
-                role = msg.get("role")
-                content = msg.get("content", "")
-
-                if role == "system":
-                    system_prompt = (
-                        content if isinstance(content, str) else str(content)
-                    )
-                elif role == "user":
-                    # 用户消息：支持字符串或块列表
-                    if isinstance(content, str):
-                        anthropic_messages.append(
-                            {
-                                "role": "user",
-                                "content": [{"type": "text", "text": content}],
-                            }
-                        )
-                    else:
-                        anthropic_messages.append({"role": "user", "content": content})
-                elif role == "assistant":
-                    if isinstance(content, str):
-                        anthropic_messages.append(
-                            {
-                                "role": "assistant",
-                                "content": [{"type": "text", "text": content}],
-                            }
-                        )
-                    else:
-                        assistant_content = []
-                        tool_result_content = []
-                        for block in content:
-                            if isinstance(block, dict):
-                                block_type = block.get("type")
-                                if block_type == "thinking":
-                                    assistant_content.append(
-                                        {
-                                            "type": "thinking",
-                                            "thinking": block.get("thinking", ""),
-                                        }
-                                    )
-                                elif block_type == "text":
-                                    assistant_content.append(
-                                        {"type": "text", "text": block.get("text", "")}
-                                    )
-                                elif block_type == "tool_use":
-                                    assistant_content.append(
-                                        {
-                                            "type": "tool_use",
-                                            "id": block.get("id", ""),
-                                            "name": block.get("name", ""),
-                                            "input": block.get("input", {}),
-                                        }
-                                    )
-                                elif block_type == "tool_result":
-                                    # tool_result 必须放在 user 消息中
-                                    tool_result_content.append(
-                                        {
-                                            "type": "tool_result",
-                                            "tool_use_id": block.get("tool_use_id", ""),
-                                            "content": block.get("content", ""),
-                                        }
-                                    )
-                        if assistant_content:
-                            anthropic_messages.append(
-                                {"role": "assistant", "content": assistant_content}
-                            )
-                        if tool_result_content:
-                            anthropic_messages.append(
-                                {"role": "user", "content": tool_result_content}
-                            )
+            system_prompt, anthropic_messages = self._convert_to_anthropic_messages(messages)
 
             # 构建请求
             request_kwargs = {
@@ -224,77 +214,8 @@ class LLMService:
                 api_key=effective_api_key,
             )
 
-            anthropic_messages = []
-            system_prompt = ""
-
-            for msg in messages:
-                role = msg.get("role")
-                content = msg.get("content", "")
-
-                if role == "system":
-                    system_prompt = (
-                        content if isinstance(content, str) else str(content)
-                    )
-                elif role == "user":
-                    if isinstance(content, str):
-                        anthropic_messages.append(
-                            {
-                                "role": "user",
-                                "content": [{"type": "text", "text": content}],
-                            }
-                        )
-                    else:
-                        anthropic_messages.append({"role": "user", "content": content})
-                elif role == "assistant":
-                    if isinstance(content, str):
-                        anthropic_messages.append(
-                            {
-                                "role": "assistant",
-                                "content": [{"type": "text", "text": content}],
-                            }
-                        )
-                    else:
-                        assistant_content = []
-                        tool_result_content = []
-                        for block in content:
-                            if isinstance(block, dict):
-                                block_type = block.get("type")
-                                if block_type == "thinking":
-                                    assistant_content.append(
-                                        {
-                                            "type": "thinking",
-                                            "thinking": block.get("thinking", ""),
-                                        }
-                                    )
-                                elif block_type == "text":
-                                    assistant_content.append(
-                                        {"type": "text", "text": block.get("text", "")}
-                                    )
-                                elif block_type == "tool_use":
-                                    assistant_content.append(
-                                        {
-                                            "type": "tool_use",
-                                            "id": block.get("id", ""),
-                                            "name": block.get("name", ""),
-                                            "input": block.get("input", {}),
-                                        }
-                                    )
-                                elif block_type == "tool_result":
-                                    tool_result_content.append(
-                                        {
-                                            "type": "tool_result",
-                                            "tool_use_id": block.get("tool_use_id", ""),
-                                            "content": block.get("content", ""),
-                                        }
-                                    )
-                        if assistant_content:
-                            anthropic_messages.append(
-                                {"role": "assistant", "content": assistant_content}
-                            )
-                        if tool_result_content:
-                            anthropic_messages.append(
-                                {"role": "user", "content": tool_result_content}
-                            )
+            # 转换消息格式
+            system_prompt, anthropic_messages = self._convert_to_anthropic_messages(messages)
 
             request_kwargs = {
                 "model": self.model,

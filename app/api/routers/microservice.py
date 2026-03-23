@@ -16,7 +16,7 @@ from app.api.schemas.microservice import (
     ToolBindRequest,
     ToolEnabledRequest
 )
-from app.utils.result import Result
+from app.utils.result import Result, PageResult
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ router = APIRouter()
 @router.get("/microservices")
 async def list_microservices(
     db: AsyncSession = Depends(get_db_session)
-) -> Result:
+) -> PageResult:
     """获取微服务列表"""
     try:
         repository = McpGatewayRepository(db)
@@ -55,10 +55,10 @@ async def list_microservices(
             }
             result.append(ms_dict)
         
-        return Result.success(result)
+        return PageResult.of(data=result, total=len(result))
     except Exception as e:
         logger.error(f"获取微服务列表失败: {str(e)}")
-        return Result.internal_error(str(e))
+        return PageResult.of(data=[], total=0, message=str(e))
 
 
 @router.post("/microservices")
@@ -218,14 +218,14 @@ async def check_microservice_health(
 async def get_microservice_tools(
     microservice_id: int,
     db: AsyncSession = Depends(get_db_session)
-) -> Result:
+) -> PageResult:
     """获取微服务的工具列表"""
     try:
         repository = McpGatewayRepository(db)
         
         microservice = await repository.get_microservice_by_id(microservice_id)
         if not microservice:
-            return Result.not_found("微服务不存在")
+            return PageResult.of(data=[], total=0, message="微服务不存在")
         
         tools = await repository.get_tools_by_microservice(microservice_id)
         
@@ -246,10 +246,10 @@ async def get_microservice_tools(
                 "error_count": tool.error_count or 0
             })
         
-        return Result.success(result)
+        return PageResult.of(data=result, total=len(result))
     except Exception as e:
         logger.error(f"获取微服务工具列表失败: {str(e)}")
-        return Result.internal_error(str(e))
+        return PageResult.of(data=[], total=0, message=str(e))
 
 
 # ============================================
@@ -259,7 +259,7 @@ async def get_microservice_tools(
 @router.get("/tools/all")
 async def list_all_tools(
     db: AsyncSession = Depends(get_db_session)
-) -> Result:
+) -> PageResult:
     """获取所有工具列表（包含微服务信息）"""
     try:
         repository = McpGatewayRepository(db)
@@ -286,16 +286,16 @@ async def list_all_tools(
                 "error_count": tool.error_count or 0
             })
         
-        return Result.success(result)
+        return PageResult.of(data=result, total=len(result))
     except Exception as e:
         logger.error(f"获取工具列表失败: {str(e)}")
-        return Result.internal_error(str(e))
+        return PageResult.of(data=[], total=0, message=str(e))
 
 
 @router.get("/tools/unbind")
 async def list_unbind_tools(
     db: AsyncSession = Depends(get_db_session)
-) -> Result:
+) -> PageResult:
     """获取未绑定微服务的工具列表"""
     try:
         repository = McpGatewayRepository(db)
@@ -312,10 +312,10 @@ async def list_unbind_tools(
                 "call_status": tool.call_status
             })
         
-        return Result.success(result)
+        return PageResult.of(data=result, total=len(result))
     except Exception as e:
         logger.error(f"获取未绑定工具列表失败: {str(e)}")
-        return Result.internal_error(str(e))
+        return PageResult.of(data=[], total=0, message=str(e))
 
 
 @router.put("/tools/{tool_id}/bind")

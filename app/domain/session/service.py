@@ -6,8 +6,8 @@ import asyncio
 import logging
 import secrets
 from datetime import datetime
-from typing import Dict, Optional
-from dataclasses import dataclass
+from typing import Dict, Optional, List
+from dataclasses import dataclass, field
 
 from app.config import get_settings
 from app.domain.session.models import SessionConfig
@@ -21,6 +21,7 @@ class PendingSession:
     """待连接的WebSocket会话信息"""
     gateway_key: str
     llm_key: str
+    microservice_ids: Optional[List[int]] = None
 
 
 class WebSocketSessionManager:
@@ -29,11 +30,18 @@ class WebSocketSessionManager:
     def __init__(self):
         self.pending_sessions: Dict[str, PendingSession] = {}
     
-    def create_pending_session(self, gateway_key: str, llm_key: str) -> str:
+    def create_pending_session(
+        self, 
+        gateway_key: str, 
+        llm_key: str,
+        microservice_ids: Optional[List[int]] = None
+    ) -> str:
         """创建待连接的会话"""
         session_id = f"session_{secrets.token_hex(16)}"
-        self.pending_sessions[session_id] = PendingSession(gateway_key, llm_key)
-        logger.info(f"创建待连接会话: {session_id}")
+        self.pending_sessions[session_id] = PendingSession(
+            gateway_key, llm_key, microservice_ids
+        )
+        logger.info(f"创建待连接会话: {session_id}, 微服务筛选: {microservice_ids}")
         return session_id
     
     def get_pending_session(self, session_id: str) -> Optional[PendingSession]:

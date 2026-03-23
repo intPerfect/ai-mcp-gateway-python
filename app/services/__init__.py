@@ -8,7 +8,6 @@ from .llm_service import LLMService
 from .mcp_tool_registry import McpToolRegistry, ToolDefinition, ToolStatus
 from .message_manager import Message, MessageHistory, MessageBuilder
 from .conversation_logger import ConversationLogger
-from .websocket_protocol import WSEvent, WSEventType
 
 __all__ = [
     "ReActAgent",
@@ -21,6 +20,4 @@ __all__ = [
     "MessageHistory",
     "MessageBuilder",
     "ConversationLogger",
-    "WSEvent",
-    "WSEventType",
 ]
