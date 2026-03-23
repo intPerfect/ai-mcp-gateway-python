@@ -9,10 +9,11 @@ ReAct 模型核心循环：
 4. 循环直到得出最终答案
 """
 
+import asyncio
 import json
 import logging
 import secrets
-from typing import Any, Dict, List, Optional, AsyncGenerator
+from typing import Any, Dict, List, Optional, AsyncGenerator, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
@@ -364,51 +365,83 @@ class ReActAgent:
             )
             
             tool_results = []
+            
+            # 并发执行工具 - 先发送所有 tool_call 事件
             for tool_call in round_tool_calls:
                 tool_id = tool_call.get("id", f"tool_{secrets.token_hex(8)}")
                 tool_name = tool_call.get("name", "")
                 arguments = tool_call.get("input", {})
-                
-                step.action = tool_name
-                step.action_input = arguments
-                
                 yield WSEventFactory.tool_call(tool_id, tool_name, arguments, "executing")
+            
+            # 定义单个工具执行函数
+            async def execute_single_tool(tool_call: Dict) -> Tuple[str, str, Dict[str, Any], bool]:
+                """执行单个工具，返回 (tool_id, tool_name, result, success)"""
+                tool_id = tool_call.get("id", f"tool_{secrets.token_hex(8)}")
+                tool_name = tool_call.get("name", "")
+                arguments = tool_call.get("input", {})
                 
-                # 执行工具
                 try:
                     result = await llm_service.execute_tool(tool_name, arguments)
-                    tool_results.append({
-                        "tool_use_id": tool_id,
-                        "tool_name": tool_name,
-                        "result": result,
-                        "success": True
-                    })
-                    step.observation = json.dumps(result, ensure_ascii=False)[:1000]
-                    session.tools_called.append(tool_name)
-                    
-                    await conversation_logger.log_tool_call(
-                        session.session_id, tool_id, tool_name, arguments, step.step_num
-                    )
-                    await conversation_logger.log_tool_result(
-                        session.session_id, tool_id, tool_name, result, True, step.step_num
-                    )
-                    
+                    return (tool_id, tool_name, result, True)
                 except Exception as e:
                     error_result = {"error": str(e)}
+                    return (tool_id, tool_name, error_result, False)
+            
+            # 并发执行所有工具
+            tasks = [execute_single_tool(tc) for tc in round_tool_calls]
+            execution_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # 处理结果并发送事件
+            for i, exec_result in enumerate(execution_results):
+                tool_call = round_tool_calls[i]
+                tool_id = tool_call.get("id", f"tool_{secrets.token_hex(8)}")
+                tool_name = tool_call.get("name", "")
+                arguments = tool_call.get("input", {})
+                
+                if isinstance(exec_result, Exception):
+                    # 异常情况
+                    error_result = {"error": str(exec_result)}
                     tool_results.append({
                         "tool_use_id": tool_id,
                         "tool_name": tool_name,
                         "result": error_result,
                         "success": False
                     })
-                    step.observation = f"Error: {str(e)}"
+                    step.observation = f"Error: {str(exec_result)}"
                     
                     await conversation_logger.log_tool_result(
                         session.session_id, tool_id, tool_name, error_result, False, step.step_num
                     )
+                else:
+                    # 正常结果
+                    _, _, result, success = exec_result
+                    tool_results.append({
+                        "tool_use_id": tool_id,
+                        "tool_name": tool_name,
+                        "result": result,
+                        "success": success
+                    })
+                    
+                    if success:
+                        step.observation = json.dumps(result, ensure_ascii=False)[:1000]
+                        session.tools_called.append(tool_name)
+                        
+                        await conversation_logger.log_tool_call(
+                            session.session_id, tool_id, tool_name, arguments, step.step_num
+                        )
+                        await conversation_logger.log_tool_result(
+                            session.session_id, tool_id, tool_name, result, True, step.step_num
+                        )
+                    else:
+                        step.observation = f"Error: {result.get('error', 'Unknown error')}"
+                        
+                        await conversation_logger.log_tool_result(
+                            session.session_id, tool_id, tool_name, result, False, step.step_num
+                        )
                 
+                # 发送 tool_result 事件
                 yield WSEventFactory.tool_result(
-                    tool_id, tool_name, 
+                    tool_id, tool_name,
                     tool_results[-1]["result"],
                     tool_results[-1]["success"]
                 )

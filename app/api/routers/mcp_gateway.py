@@ -15,7 +15,6 @@ from app.infrastructure.database import get_db_session
 from app.domain.session import session_manager, MessageHandler
 from app.domain.auth import AuthService, LicenseCommand
 from app.utils.exceptions import AppException, AuthException
-from app.api.schemas import Response as ApiResponse
 
 logger = logging.getLogger(__name__)
 

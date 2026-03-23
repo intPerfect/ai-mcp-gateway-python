@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.infrastructure.database import get_db_session
 from app.infrastructure.database.models import McpGatewayAuth
 from app.infrastructure.database import McpGatewayRepository
+from app.utils.result import Result
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +40,10 @@ async def create_api_key(
     repository = McpGatewayRepository(db)
     await repository.insert_gateway_auth(auth)
     
-    return {
-        "code": "0000",
-        "info": "success",
-        "data": {
-            "api_key": api_key,
-            "expire_time": expire_time.isoformat()
-        }
-    }
+    return Result.success({
+        "api_key": api_key,
+        "expire_time": expire_time.isoformat()
+    })
 
 
 @router.get("/apikeys/list")
@@ -58,14 +55,10 @@ async def list_api_keys(
     repository = McpGatewayRepository(db)
     count = await repository.get_effective_auth_count(gateway_id)
     
-    return {
-        "code": "0000",
-        "info": "success",
-        "data": {
-            "gateway_id": gateway_id,
-            "active_count": count
-        }
-    }
+    return Result.success({
+        "gateway_id": gateway_id,
+        "active_count": count
+    })
 
 
 @router.get("/apikeys")
@@ -98,15 +91,7 @@ async def get_api_keys(db: AsyncSession = Depends(get_db_session)):
                 "expire_time": "2099-12-31 23:59:59",
             })
 
-        return {
-            "code": "0000",
-            "info": "success",
-            "data": {"gateway_keys": gateway_keys, "user_keys": []},
-        }
+        return Result.success({"gateway_keys": gateway_keys, "user_keys": []})
     except Exception as e:
         logger.error(f"获取API Keys失败: {str(e)}")
-        return {
-            "code": "SYSTEM_ERROR",
-            "info": str(e),
-            "data": {"gateway_keys": [], "user_keys": []},
-        }
+        return Result.error("SYSTEM_ERROR", str(e))

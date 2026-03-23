@@ -3,36 +3,24 @@
 Microservice Router - 微服务管理路由
 """
 import logging
-from typing import Dict, Any
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import get_db_session
 from app.infrastructure.database import McpGatewayRepository
-from app.infrastructure.database.models import McpMicroservice, McpGatewayTool
+from app.infrastructure.database.models import McpMicroservice
 from app.api.schemas.microservice import (
     MicroserviceCreate,
     MicroserviceUpdate,
-    MicroserviceResponse,
     ToolBindRequest,
-    ToolEnabledRequest,
-    ToolResponse
+    ToolEnabledRequest
 )
+from app.utils.result import Result
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def success_response(data: Any = None, info: str = "success") -> Dict:
-    """构建成功响应"""
-    return {"code": "0000", "info": info, "data": data}
-
-
-def fail_response(code: str, info: str) -> Dict:
-    """构建失败响应"""
-    return {"code": code, "info": info}
 
 
 # ============================================
@@ -42,7 +30,7 @@ def fail_response(code: str, info: str) -> Dict:
 @router.get("/microservices")
 async def list_microservices(
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """获取微服务列表"""
     try:
         repository = McpGatewayRepository(db)
@@ -67,17 +55,17 @@ async def list_microservices(
             }
             result.append(ms_dict)
         
-        return success_response(result)
+        return Result.success(result)
     except Exception as e:
         logger.error(f"获取微服务列表失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.post("/microservices")
 async def create_microservice(
     request: MicroserviceCreate,
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """创建微服务"""
     try:
         repository = McpGatewayRepository(db)
@@ -85,7 +73,7 @@ async def create_microservice(
         # 检查名称是否已存在
         existing = await repository.get_microservice_by_name(request.name)
         if existing:
-            return fail_response("4001", f"微服务名称已存在: {request.name}")
+            return Result.error("4001", f"微服务名称已存在: {request.name}")
         
         microservice = McpMicroservice(
             name=request.name,
@@ -98,7 +86,7 @@ async def create_microservice(
         
         created = await repository.create_microservice(microservice)
         
-        return success_response({
+        return Result.success({
             "id": created.id,
             "name": created.name,
             "http_base_url": created.http_base_url,
@@ -107,7 +95,7 @@ async def create_microservice(
         })
     except Exception as e:
         logger.error(f"创建微服务失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.put("/microservices/{microservice_id}")
@@ -115,7 +103,7 @@ async def update_microservice(
     microservice_id: int,
     request: MicroserviceUpdate,
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """更新微服务"""
     try:
         repository = McpGatewayRepository(db)
@@ -124,7 +112,7 @@ async def update_microservice(
         if request.name:
             existing = await repository.get_microservice_by_name(request.name)
             if existing and existing.id != microservice_id:
-                return fail_response("4001", f"微服务名称已存在: {request.name}")
+                return Result.error("4001", f"微服务名称已存在: {request.name}")
         
         updated = await repository.update_microservice(
             microservice_id,
@@ -136,9 +124,9 @@ async def update_microservice(
         )
         
         if not updated:
-            return fail_response("4004", "微服务不存在")
+            return Result.not_found("微服务不存在")
         
-        return success_response({
+        return Result.success({
             "id": updated.id,
             "name": updated.name,
             "http_base_url": updated.http_base_url,
@@ -148,14 +136,14 @@ async def update_microservice(
         })
     except Exception as e:
         logger.error(f"更新微服务失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.delete("/microservices/{microservice_id}")
 async def delete_microservice(
     microservice_id: int,
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """删除微服务"""
     try:
         repository = McpGatewayRepository(db)
@@ -169,26 +157,26 @@ async def delete_microservice(
         success = await repository.delete_microservice(microservice_id)
         
         if not success:
-            return fail_response("4004", "微服务不存在")
+            return Result.not_found("微服务不存在")
         
-        return success_response(info="删除成功")
+        return Result.success(message="删除成功")
     except Exception as e:
         logger.error(f"删除微服务失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.post("/microservices/{microservice_id}/check")
 async def check_microservice_health(
     microservice_id: int,
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """微服务健康检查"""
     try:
         repository = McpGatewayRepository(db)
         microservice = await repository.get_microservice_by_id(microservice_id)
         
         if not microservice:
-            return fail_response("4004", "微服务不存在")
+            return Result.not_found("微服务不存在")
         
         # 发送健康检查请求
         health_status = "unhealthy"
@@ -217,27 +205,27 @@ async def check_microservice_health(
         # 更新健康状态
         await repository.update_microservice_health(microservice_id, health_status)
         
-        return success_response({
+        return Result.success({
             "health_status": health_status,
             "message": check_message
         })
     except Exception as e:
         logger.error(f"健康检查失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.get("/microservices/{microservice_id}/tools")
 async def get_microservice_tools(
     microservice_id: int,
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """获取微服务的工具列表"""
     try:
         repository = McpGatewayRepository(db)
         
         microservice = await repository.get_microservice_by_id(microservice_id)
         if not microservice:
-            return fail_response("4004", "微服务不存在")
+            return Result.not_found("微服务不存在")
         
         tools = await repository.get_tools_by_microservice(microservice_id)
         
@@ -258,10 +246,10 @@ async def get_microservice_tools(
                 "error_count": tool.error_count or 0
             })
         
-        return success_response(result)
+        return Result.success(result)
     except Exception as e:
         logger.error(f"获取微服务工具列表失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))
 
 
 # ============================================
@@ -271,7 +259,7 @@ async def get_microservice_tools(
 @router.get("/tools/all")
 async def list_all_tools(
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """获取所有工具列表（包含微服务信息）"""
     try:
         repository = McpGatewayRepository(db)
@@ -298,16 +286,16 @@ async def list_all_tools(
                 "error_count": tool.error_count or 0
             })
         
-        return success_response(result)
+        return Result.success(result)
     except Exception as e:
         logger.error(f"获取工具列表失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.get("/tools/unbind")
 async def list_unbind_tools(
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """获取未绑定微服务的工具列表"""
     try:
         repository = McpGatewayRepository(db)
@@ -324,10 +312,10 @@ async def list_unbind_tools(
                 "call_status": tool.call_status
             })
         
-        return success_response(result)
+        return Result.success(result)
     except Exception as e:
         logger.error(f"获取未绑定工具列表失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.put("/tools/{tool_id}/bind")
@@ -335,7 +323,7 @@ async def bind_tool(
     tool_id: int,
     request: ToolBindRequest,
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """绑定工具到微服务"""
     try:
         repository = McpGatewayRepository(db)
@@ -343,40 +331,40 @@ async def bind_tool(
         # 检查工具是否存在
         tool = await repository.get_tool_by_id(tool_id)
         if not tool:
-            return fail_response("4004", "工具不存在")
+            return Result.not_found("工具不存在")
         
         # 检查微服务是否存在
         microservice = await repository.get_microservice_by_id(request.microservice_id)
         if not microservice:
-            return fail_response("4004", "微服务不存在")
+            return Result.not_found("微服务不存在")
         
         await repository.bind_tool_to_microservice(tool_id, request.microservice_id)
         
-        return success_response(info=f"工具已绑定到微服务: {microservice.name}")
+        return Result.success(message=f"工具已绑定到微服务: {microservice.name}")
     except Exception as e:
         logger.error(f"绑定工具失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.put("/tools/{tool_id}/unbind")
 async def unbind_tool(
     tool_id: int,
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """解绑工具"""
     try:
         repository = McpGatewayRepository(db)
         
         tool = await repository.get_tool_by_id(tool_id)
         if not tool:
-            return fail_response("4004", "工具不存在")
+            return Result.not_found("工具不存在")
         
         await repository.unbind_tool(tool_id)
         
-        return success_response(info="工具已解绑")
+        return Result.success(message="工具已解绑")
     except Exception as e:
         logger.error(f"解绑工具失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.put("/tools/{tool_id}/enabled")
@@ -384,19 +372,19 @@ async def update_tool_enabled(
     tool_id: int,
     request: ToolEnabledRequest,
     db: AsyncSession = Depends(get_db_session)
-) -> Dict:
+) -> Result:
     """更新工具启用状态"""
     try:
         repository = McpGatewayRepository(db)
         
         tool = await repository.get_tool_by_id(tool_id)
         if not tool:
-            return fail_response("4004", "工具不存在")
+            return Result.not_found("工具不存在")
         
         await repository.update_tool_enabled(tool_id, request.enabled)
         
         status_text = "启用" if request.enabled == 1 else "禁用"
-        return success_response(info=f"工具已{status_text}")
+        return Result.success(message=f"工具已{status_text}")
     except Exception as e:
         logger.error(f"更新工具状态失败: {str(e)}")
-        return fail_response("5000", str(e))
+        return Result.internal_error(str(e))

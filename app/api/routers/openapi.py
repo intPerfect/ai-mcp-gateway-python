@@ -16,6 +16,7 @@ from app.domain.protocol.openapi import (
     fetch_openapi_spec,
     build_preview_data
 )
+from app.utils.result import Result
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +44,10 @@ async def import_openapi(
         tools = parse_openapi_spec(spec)
         
         if not tools:
-            return {"code": "0000", "info": "success", "data": {
+            return Result.success({
                 "message": "未发现可导入的API",
                 "tools": []
-            }}
+            })
         
         # 导入到数据库
         imported = []
@@ -130,14 +131,10 @@ async def import_openapi(
         
         await db.commit()
         
-        return {
-            "code": "0000",
-            "info": "success",
-            "data": {
-                "message": f"成功导入 {len(imported)} 个工具",
-                "tools": imported
-            }
-        }
+        return Result.success({
+            "message": f"成功导入 {len(imported)} 个工具",
+            "tools": imported
+        })
         
     except Exception as e:
         logger.error(f"导入OpenAPI失败: {str(e)}")
@@ -152,14 +149,10 @@ async def preview_openapi(openapi_url: str, service_url: str):
         tools = parse_openapi_spec(spec)
         preview = build_preview_data(tools, service_url)
         
-        return {
-            "code": "0000",
-            "info": "success",
-            "data": {
-                "total": len(preview),
-                "tools": preview
-            }
-        }
+        return Result.success({
+            "total": len(preview),
+            "tools": preview
+        })
         
     except Exception as e:
         logger.error(f"预览OpenAPI失败: {str(e)}")

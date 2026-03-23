@@ -9,18 +9,8 @@ from app.api.schemas.chat import SessionRequest, SessionResponse
 from app.api.schemas.tool import ToolInfo, ToolStatusInfo
 from app.api.schemas.openapi import OpenAPIImportRequest, OpenAPIToolInfo
 
-
-class Response(BaseModel):
-    """Generic API response"""
-    code: str = "0000"
-    info: str = "success"
-    data: Optional[Any] = None
-
-
-class ErrorResponse(BaseModel):
-    """Error response"""
-    code: str
-    info: str
+# 导入统一的Result封装
+from app.utils.result import Result, ResultCode, PageResult
 
 
 class JSONRPCRequest(BaseModel):
@@ -101,9 +91,10 @@ __all__ = [
     "SessionRequest", "SessionResponse",
     "ToolInfo", "ToolStatusInfo",
     "OpenAPIImportRequest", "OpenAPIToolInfo",
-    "Response", "ErrorResponse",
     "JSONRPCRequest", "JSONRPCError", "JSONRPCResponse",
     "ServerInfo", "Capabilities", "InitializeResult",
     "ToolInputSchema", "Tool", "ToolsListResult",
-    "ContentItem", "ToolCallResult"
+    "ContentItem", "ToolCallResult",
+    # Result
+    "Result", "ResultCode", "PageResult"
 ]
