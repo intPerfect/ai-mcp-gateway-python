@@ -46,7 +46,42 @@ class McpGatewayAuth(Base):
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     gateway_id = Column(String(64), nullable=False)
-    api_key = Column(String(128), unique=True, nullable=False)
+    key_id = Column(String(32), unique=True, nullable=False)  # API Key 唯一标识，用于索引查询
+    api_key_hash = Column(String(128), nullable=False)  # bcrypt 加盐哈希后的 API Key
+    key_preview = Column(String(32), nullable=True)  # Key前缀预览（脱敏显示）
+    rate_limit = Column(Integer, default=1000)
+    expire_time = Column(DateTime, nullable=True)
+    remark = Column(String(256), nullable=True)
+    status = Column(SmallInteger, nullable=False, default=1)
+    create_time = Column(DateTime, default=datetime.now)
+    update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class McpLlm(Base):
+    """LLM服务配置"""
+    __tablename__ = "mcp_llm"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    llm_id = Column(String(64), unique=True, nullable=False)  # LLM唯一标识
+    llm_name = Column(String(128), nullable=False)  # LLM名称(如通义千问、DeepSeek)
+    llm_type = Column(String(32), nullable=False)  # 类型: qwen/deepseek/minimax/openai
+    base_url = Column(String(512), nullable=False)  # API基础URL
+    default_model = Column(String(128), nullable=True)  # 默认模型
+    description = Column(String(512), nullable=True)  # 描述
+    status = Column(SmallInteger, nullable=False, default=1)
+    create_time = Column(DateTime, default=datetime.now)
+    update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class McpLlmKey(Base):
+    """LLM API Key配置"""
+    __tablename__ = "mcp_llm_key"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    llm_id = Column(String(64), nullable=False)  # 关联LLM ID
+    key_id = Column(String(32), unique=True, nullable=False)  # Key唯一标识
+    api_key_hash = Column(String(128), nullable=False)  # bcrypt哈希后的Key
+    key_preview = Column(String(32), nullable=True)  # Key前缀预览（脱敏显示）
     rate_limit = Column(Integer, default=1000)
     expire_time = Column(DateTime, nullable=True)
     remark = Column(String(256), nullable=True)

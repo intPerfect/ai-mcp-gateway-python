@@ -20,3 +20,6 @@ mcp>=1.0.0
 
 # Utilities
 python-multipart==0.0.9
+
+# Security
+bcrypt==4.2.0

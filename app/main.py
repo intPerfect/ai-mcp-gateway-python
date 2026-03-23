@@ -8,7 +8,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.api.routers import mcp_router, chat_router, tools_router, openapi_router, apikeys_router, microservice_router
+from app.api.routers import mcp_router, chat_router, tools_router, openapi_router, microservice_router, gateway_router
 from app.api.routers.chat import websocket_handler, load_tools_from_db
 from app.services.mcp_tool_registry import mcp_tool_registry
 
@@ -66,7 +66,7 @@ app.add_middleware(
 app.include_router(mcp_router, prefix="/api-gateway", tags=["MCP Gateway"])
 app.include_router(tools_router, prefix="/api", tags=["Tools"])
 app.include_router(openapi_router, prefix="/api", tags=["OpenAPI Import"])
-app.include_router(apikeys_router, prefix="/api", tags=["API Keys"])
+app.include_router(gateway_router, prefix="/api", tags=["Gateway Management"])
 app.include_router(microservice_router, prefix="/api", tags=["Microservice"])
 app.include_router(chat_router, prefix="/api/chat", tags=["Chat"])
 

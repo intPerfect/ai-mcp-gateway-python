@@ -7,7 +7,7 @@ from app.api.routers import (
     chat_router,
     tools_router,
     openapi_router,
-    apikeys_router,
+    gateway_router,
     microservice_router,
 )
 from app.api.schemas import (
@@ -22,7 +22,7 @@ __all__ = [
     "chat_router",
     "tools_router",
     "openapi_router",
-    "apikeys_router",
+    "gateway_router",
     "microservice_router",
     "JSONRPCRequest",
     "JSONRPCResponse",

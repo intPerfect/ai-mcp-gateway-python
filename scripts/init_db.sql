@@ -1,6 +1,6 @@
--- AI MCP Gateway Database Schema v3.0
+-- AI MCP Gateway Database Schema v5.0
 -- MySQL 8.0+
--- 优化版本：移除冗余字段，支持多参数位置
+-- v5.0 更新：网关管理功能升级，新增LLM配置表
 
 CREATE DATABASE IF NOT EXISTS `ai_mcp_gateway_v2` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE `ai_mcp_gateway_v2`;
@@ -12,6 +12,8 @@ DROP TABLE IF EXISTS `mcp_protocol_mapping`;
 DROP TABLE IF EXISTS `mcp_protocol_http`;
 DROP TABLE IF EXISTS `mcp_gateway_tool`;
 DROP TABLE IF EXISTS `mcp_microservice`;
+DROP TABLE IF EXISTS `mcp_llm_key`;
+DROP TABLE IF EXISTS `mcp_llm`;
 DROP TABLE IF EXISTS `mcp_gateway_auth`;
 DROP TABLE IF EXISTS `mcp_gateway`;
 
@@ -54,16 +56,57 @@ CREATE TABLE `mcp_gateway` (
 CREATE TABLE `mcp_gateway_auth` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `gateway_id` varchar(64) NOT NULL COMMENT '网关ID',
-  `api_key` varchar(128) NOT NULL COMMENT 'API密钥',
+  `key_id` varchar(32) NOT NULL COMMENT 'API Key唯一标识，用于索引查询',
+  `api_key_hash` varchar(128) NOT NULL COMMENT 'bcrypt加盐哈希后的API Key',
+  `key_preview` varchar(32) DEFAULT NULL COMMENT 'Key前缀预览（脱敏显示）',
   `rate_limit` int DEFAULT 1000 COMMENT '速率限制(次/小时)',
   `expire_time` datetime DEFAULT NULL COMMENT '过期时间',
+  `remark` varchar(256) DEFAULT NULL COMMENT '备注',
   `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_api_key` (`api_key`),
+  UNIQUE KEY `uk_key_id` (`key_id`),
   KEY `idx_gateway_id` (`gateway_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MCP网关认证';
+
+-- ============================================
+-- LLM 配置表
+-- ============================================
+CREATE TABLE `mcp_llm` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `llm_id` varchar(64) NOT NULL COMMENT 'LLM唯一标识',
+  `llm_name` varchar(128) NOT NULL COMMENT 'LLM名称(如通义千问、DeepSeek)',
+  `llm_type` varchar(32) NOT NULL COMMENT '类型: qwen/deepseek/minimax/openai',
+  `base_url` varchar(512) NOT NULL COMMENT 'API基础URL',
+  `default_model` varchar(128) DEFAULT NULL COMMENT '默认模型',
+  `description` varchar(512) DEFAULT NULL COMMENT '描述',
+  `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_llm_id` (`llm_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='LLM服务配置';
+
+-- ============================================
+-- LLM Key 表
+-- ============================================
+CREATE TABLE `mcp_llm_key` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `llm_id` varchar(64) NOT NULL COMMENT '关联LLM ID',
+  `key_id` varchar(32) NOT NULL COMMENT 'Key唯一标识',
+  `api_key_hash` varchar(128) NOT NULL COMMENT 'bcrypt哈希后的Key',
+  `key_preview` varchar(32) DEFAULT NULL COMMENT 'Key前缀预览（脱敏显示）',
+  `rate_limit` int DEFAULT 1000 COMMENT '速率限制(次/小时)',
+  `expire_time` datetime DEFAULT NULL COMMENT '过期时间',
+  `remark` varchar(256) DEFAULT NULL COMMENT '备注',
+  `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_key_id` (`key_id`),
+  KEY `idx_llm_id` (`llm_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='LLM API Key配置';
 
 -- ============================================
 -- MCP Gateway 工具表
@@ -141,5 +184,16 @@ CREATE TABLE `mcp_protocol_mapping` (
 INSERT INTO `mcp_gateway` (`id`, `gateway_id`, `gateway_name`, `gateway_desc`, `version`, `auth`, `status`)
 VALUES (1, 'gateway_001', '商品服务网关', 'Product Service MCP Gateway', '1.0.0', 0, 1);
 
-INSERT INTO `mcp_gateway_auth` (`id`, `gateway_id`, `api_key`, `rate_limit`, `expire_time`, `status`)
-VALUES (1, 'gateway_001', 'gw-test-api-key-001', 360000, '2099-12-31 23:59:59', 1);
+-- 默认 API Key (仅供测试使用，生产环境请删除)
+-- API Key: sk-defaultkey001:Xy7zA1b2C3d4E5f6G7h8I9j0KlMnOpQrStUvWxYz
+INSERT INTO `mcp_gateway_auth` (`id`, `gateway_id`, `key_id`, `api_key_hash`, `key_preview`, `rate_limit`, `expire_time`, `remark`, `status`)
+VALUES (1, 'gateway_001', 'defaultkey001', '$2b$12$9lHqeqRUeFzcAs9ixbFqwOsYYwoQakSuwZLdGfbYKelCGShl0X6ba', 'sk-defaultke...WxYz', 360000, '2099-12-31 23:59:59', '默认测试Key', 1);
+
+-- ============================================
+-- LLM 默认配置
+-- ============================================
+INSERT INTO `mcp_llm` (`id`, `llm_id`, `llm_name`, `llm_type`, `base_url`, `default_model`, `description`, `status`) VALUES
+(1, 'qwen', '通义千问', 'qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus', '阿里云通义千问大模型', 1),
+(2, 'deepseek', 'DeepSeek', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-chat', 'DeepSeek大模型', 1),
+(3, 'minimax', 'MiniMax', 'minimax', 'https://api.minimax.chat/v1', 'abab6.5s-chat', 'MiniMax大模型', 1),
+(4, 'openai', 'OpenAI', 'openai', 'https://api.openai.com/v1', 'gpt-4o', 'OpenAI GPT模型', 1);
