@@ -4,13 +4,45 @@ Session management service
 import uuid
 import asyncio
 import logging
+import secrets
 from datetime import datetime
 from typing import Dict, Optional
+from dataclasses import dataclass
+
 from app.config import get_settings
 from app.domain.session.models import SessionConfig
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+@dataclass
+class PendingSession:
+    """待连接的WebSocket会话信息"""
+    gateway_key: str
+    llm_key: str
+
+
+class WebSocketSessionManager:
+    """WebSocket会话管理器 - 管理待连接的会话"""
+    
+    def __init__(self):
+        self.pending_sessions: Dict[str, PendingSession] = {}
+    
+    def create_pending_session(self, gateway_key: str, llm_key: str) -> str:
+        """创建待连接的会话"""
+        session_id = f"session_{secrets.token_hex(16)}"
+        self.pending_sessions[session_id] = PendingSession(gateway_key, llm_key)
+        logger.info(f"创建待连接会话: {session_id}")
+        return session_id
+    
+    def get_pending_session(self, session_id: str) -> Optional[PendingSession]:
+        """获取并移除待连接会话"""
+        return self.pending_sessions.pop(session_id, None)
+
+
+# 全局WebSocket会话管理器
+ws_session_manager = WebSocketSessionManager()
 
 
 class SessionManagementService:

@@ -6,8 +6,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.infrastructure.repository import McpGatewayRepository
-from app.infrastructure.models import McpGatewayAuth
+from app.infrastructure.database import McpGatewayRepository
+from app.infrastructure.database.models import McpGatewayAuth
 from app.domain.auth.models import LicenseCommand, RateLimitCommand, RegisterCommand, AuthInfo
 from app.utils.exceptions import AuthException, RateLimitException
 

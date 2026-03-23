@@ -1,10 +1,12 @@
+# -*- coding: utf-8 -*-
 """
-SQLAlchemy ORM Models for MCP Gateway v3.0
-优化版本：简化字段，支持多参数位置
+Database Models - ORM模型
+SQLAlchemy ORM Models for MCP Gateway
 """
 from datetime import datetime
 from sqlalchemy import Column, BigInteger, String, Text, Integer, SmallInteger, DateTime
-from app.infrastructure.database import Base
+
+from app.infrastructure.database.connection import Base
 
 
 class McpGateway(Base):
@@ -31,6 +33,7 @@ class McpGatewayAuth(Base):
     api_key = Column(String(128), unique=True, nullable=False)
     rate_limit = Column(Integer, default=1000)
     expire_time = Column(DateTime, nullable=True)
+    remark = Column(String(256), nullable=True)
     status = Column(SmallInteger, nullable=False, default=1)
     create_time = Column(DateTime, default=datetime.now)
     update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)

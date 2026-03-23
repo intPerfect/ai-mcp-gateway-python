@@ -1,46 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-OpenAPI Import API v3.0 - OpenAPI规范导入功能
-解析OpenAPI规范并生成MCP工具配置写入数据库
-支持多种HTTP传参方式：path/query/header/body/form/file
+OpenAPI Parser - OpenAPI规范解析器
+从OpenAPI规范中提取工具信息
 """
 import json
 import logging
 import re
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-import httpx
+from dataclasses import dataclass, field
 
-from app.infrastructure.database import get_db_session
-from app.infrastructure.database.models import McpGatewayTool, McpProtocolHttp, McpProtocolMapping
-from app.infrastructure.database import McpGatewayRepository
+import httpx
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
 
-
-class OpenAPIImportRequest(BaseModel):
-    """OpenAPI导入请求"""
-    gateway_id: str = "gateway_001"
-    service_name: str
-    service_url: str
-    openapi_url: Optional[str] = None
-    openapi_spec: Optional[Dict] = None
-
-
-class OpenAPIToolInfo(BaseModel):
-    """解析后的工具信息"""
-    name: str
-    description: str
-    method: str
-    path: str
-    parameters: List[Dict]
-
-
-class ParameterInfo(BaseModel):
+@dataclass
+class ParameterInfo:
     """参数信息"""
     name: str
     param_in: str  # path, query, header, body, form, file
@@ -50,6 +25,16 @@ class ParameterInfo(BaseModel):
     default: Optional[Any] = None
     enum: Optional[List[Any]] = None
     example: Optional[Any] = None
+
+
+@dataclass
+class OpenAPIToolInfo:
+    """解析后的工具信息"""
+    name: str
+    description: str
+    method: str
+    path: str
+    parameters: List[Dict] = field(default_factory=list)
 
 
 async def fetch_openapi_spec(url: str) -> Dict:
@@ -205,7 +190,16 @@ def parse_openapi_spec(spec: Dict) -> List[OpenAPIToolInfo]:
                 param_info = extract_param_info(
                     param_name, param_schema, param_in, required, param_desc, spec
                 )
-                parameters.append(param_info.model_dump())
+                parameters.append({
+                    "name": param_info.name,
+                    "param_in": param_info.param_in,
+                    "type": param_info.type,
+                    "required": param_info.required,
+                    "description": param_info.description,
+                    "default": param_info.default,
+                    "enum": param_info.enum,
+                    "example": param_info.example
+                })
             
             # 解析 requestBody
             request_body = operation.get("requestBody")
@@ -230,13 +224,31 @@ def parse_openapi_spec(spec: Dict) -> List[OpenAPIToolInfo]:
                                 prop_name, prop_schema, "body",
                                 prop_name in required_fields, prop_desc, spec
                             )
-                            parameters.append(param_info.model_dump())
+                            parameters.append({
+                                "name": param_info.name,
+                                "param_in": param_info.param_in,
+                                "type": param_info.type,
+                                "required": param_info.required,
+                                "description": param_info.description,
+                                "default": param_info.default,
+                                "enum": param_info.enum,
+                                "example": param_info.example
+                            })
                     else:
                         body_desc = schema.get("description", "请求体")
                         param_info = extract_param_info(
                             "body", schema, "body", required, body_desc, spec
                         )
-                        parameters.append(param_info.model_dump())
+                        parameters.append({
+                            "name": param_info.name,
+                            "param_in": param_info.param_in,
+                            "type": param_info.type,
+                            "required": param_info.required,
+                            "description": param_info.description,
+                            "default": param_info.default,
+                            "enum": param_info.enum,
+                            "example": param_info.example
+                        })
                 
                 elif "application/x-www-form-urlencoded" in content:
                     form_content = content["application/x-www-form-urlencoded"]
@@ -255,7 +267,16 @@ def parse_openapi_spec(spec: Dict) -> List[OpenAPIToolInfo]:
                                 prop_name, prop_schema, "form",
                                 prop_name in required_fields, prop_desc, spec
                             )
-                            parameters.append(param_info.model_dump())
+                            parameters.append({
+                                "name": param_info.name,
+                                "param_in": param_info.param_in,
+                                "type": param_info.type,
+                                "required": param_info.required,
+                                "description": param_info.description,
+                                "default": param_info.default,
+                                "enum": param_info.enum,
+                                "example": param_info.example
+                            })
                 
                 elif "multipart/form-data" in content:
                     multipart_content = content["multipart/form-data"]
@@ -284,7 +305,16 @@ def parse_openapi_spec(spec: Dict) -> List[OpenAPIToolInfo]:
                                 enum=prop_schema.get("enum"),
                                 example=prop_schema.get("example")
                             )
-                            parameters.append(param_info.model_dump())
+                            parameters.append({
+                                "name": param_info.name,
+                                "param_in": param_info.param_in,
+                                "type": param_info.type,
+                                "required": param_info.required,
+                                "description": param_info.description,
+                                "default": param_info.default,
+                                "enum": param_info.enum,
+                                "example": param_info.example
+                            })
             
             tools.append(OpenAPIToolInfo(
                 name=tool_name,
@@ -295,162 +325,3 @@ def parse_openapi_spec(spec: Dict) -> List[OpenAPIToolInfo]:
             ))
     
     return tools
-
-
-@router.post("/openapi/import")
-async def import_openapi(
-    request: OpenAPIImportRequest,
-    db: AsyncSession = Depends(get_db_session)
-):
-    """
-    导入OpenAPI规范并生成MCP工具配置
-    """
-    try:
-        if request.openapi_url:
-            spec = await fetch_openapi_spec(request.openapi_url)
-        elif request.openapi_spec:
-            spec = request.openapi_spec
-        else:
-            raise HTTPException(status_code=400, detail="必须提供 openapi_url 或 openapi_spec")
-        
-        tools = parse_openapi_spec(spec)
-        
-        if not tools:
-            return {"code": "0000", "info": "success", "data": {
-                "message": "未发现可导入的API",
-                "tools": []
-            }}
-        
-        imported = []
-        repository = McpGatewayRepository(db)
-        
-        for tool in tools:
-            try:
-                existing = await repository.get_tool_by_name(request.gateway_id, tool.name)
-                if existing:
-                    logger.info(f"工具已存在，跳过: {tool.name}")
-                    continue
-                
-                # 创建HTTP协议配置
-                http_config = McpProtocolHttp(
-                    protocol_id=0,
-                    http_url=f"{request.service_url.rstrip('/')}{tool.path}",
-                    http_method=tool.method,
-                    http_headers=None,
-                    timeout=30000,
-                    status=1
-                )
-                db.add(http_config)
-                await db.flush()
-                
-                protocol_id = http_config.id
-                
-                # 更新protocol_id
-                http_config.protocol_id = protocol_id
-                
-                # 创建工具配置
-                tool_config = McpGatewayTool(
-                    gateway_id=request.gateway_id,
-                    tool_id=protocol_id,
-                    tool_name=tool.name,
-                    tool_type="function",
-                    tool_description=tool.description,
-                    tool_version="1.0.0",
-                    protocol_id=protocol_id,
-                    protocol_type="http"
-                )
-                db.add(tool_config)
-                
-                # 创建参数映射
-                for idx, param in enumerate(tool.parameters):
-                    param_name = param.get("name", "")
-                    param_in = param.get("param_in", "query")
-                    param_desc = param.get("description", "")
-                    param_type = param.get("type", "string")
-                    param_required = param.get("required", False)
-                    param_default = param.get("default")
-                    param_enum = param.get("enum")
-                    param_example = param.get("example")
-                    
-                    if param_type.startswith("array"):
-                        field_type = "array"
-                    else:
-                        field_type = param_type
-                    
-                    mapping = McpProtocolMapping(
-                        protocol_id=protocol_id,
-                        param_location=param_in,  # 新字段名
-                        field_name=param_name,
-                        field_type=field_type,
-                        field_desc=param_desc,
-                        is_required=1 if param_required else 0,
-                        default_value=str(param_default) if param_default is not None else None,
-                        enum_values=json.dumps(param_enum) if param_enum else None,
-                        example_value=str(param_example) if param_example is not None else None,
-                        sort_order=idx
-                    )
-                    db.add(mapping)
-                
-                imported.append({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "method": tool.method,
-                    "path": tool.path,
-                    "param_count": len(tool.parameters)
-                })
-                
-            except Exception as e:
-                logger.error(f"导入工具失败: {tool.name} - {str(e)}")
-        
-        await db.commit()
-        
-        return {
-            "code": "0000",
-            "info": "success",
-            "data": {
-                "message": f"成功导入 {len(imported)} 个工具",
-                "tools": imported
-            }
-        }
-        
-    except httpx.HTTPError as e:
-        logger.error(f"获取OpenAPI规范失败: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"获取OpenAPI规范失败: {str(e)}")
-    except Exception as e:
-        logger.error(f"导入OpenAPI失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/openapi/preview")
-async def preview_openapi(openapi_url: str, service_url: str):
-    """预览OpenAPI规范解析结果"""
-    try:
-        spec = await fetch_openapi_spec(openapi_url)
-        tools = parse_openapi_spec(spec)
-        
-        preview = []
-        for tool in tools:
-            preview.append({
-                "name": tool.name,
-                "description": tool.description,
-                "method": tool.method,
-                "path": tool.path,
-                "full_url": f"{service_url.rstrip('/')}{tool.path}",
-                "parameters": tool.parameters
-            })
-        
-        return {
-            "code": "0000",
-            "info": "success",
-            "data": {
-                "total": len(preview),
-                "tools": preview
-            }
-        }
-        
-    except httpx.HTTPError as e:
-        logger.error(f"获取OpenAPI规范失败: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"获取OpenAPI规范失败: {str(e)}")
-    except Exception as e:
-        logger.error(f"预览OpenAPI失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))

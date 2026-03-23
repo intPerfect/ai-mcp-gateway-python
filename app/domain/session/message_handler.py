@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.infrastructure.repository import McpGatewayRepository
+from app.infrastructure.database import McpGatewayRepository
 from app.domain.session.models import (
     ToolConfig, 
     ProtocolMapping, 

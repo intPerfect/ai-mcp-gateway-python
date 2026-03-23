@@ -1,37 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-MCP Tool Registry v3.0 - 动态工具注册服务
-从数据库读取接口配置，健康检查后动态注册MCP工具
+Tool Registry - 工具注册表
+从数据库读取接口配置，动态注册MCP工具
 """
 import json
 import logging
 from typing import Dict, Any, List, Optional, Callable
-from dataclasses import dataclass, field
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.tool.models import ToolDefinition, ToolStatus
 from app.infrastructure.database import McpGatewayRepository
-from app.infrastructure.database.models import McpGatewayTool, McpProtocolHttp
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ToolDefinition:
-    """工具定义"""
-    name: str
-    description: str
-    input_schema: Dict[str, Any]
-    handler: Optional[Callable] = None
-
-
-@dataclass
-class ToolStatus:
-    """工具状态"""
-    name: str
-    status: str  # "healthy", "unhealthy", "unknown"
-    http_url: str
-    error: Optional[str] = None
 
 
 class McpToolRegistry:

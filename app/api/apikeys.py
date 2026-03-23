@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Any
 from fastapi import APIRouter
 from app.infrastructure.database import async_session_factory
-from app.infrastructure.models import McpGatewayAuth
+from app.infrastructure.database.models import McpGatewayAuth
 
 logger = logging.getLogger(__name__)
 

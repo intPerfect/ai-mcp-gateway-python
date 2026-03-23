@@ -133,3 +133,22 @@ def get_session_manager():
     if not _container.has("session_manager"):
         _container.register_singleton("session_manager", SessionManagementService)
     return _container.get("session_manager")
+
+
+def get_conversation_logger():
+    """获取对话日志记录器实例"""
+    from app.infrastructure.logging.conversation_logger import ConversationLogger
+    if not _container.has("conversation_logger"):
+        _container.register_singleton("conversation_logger", ConversationLogger)
+    return _container.get("conversation_logger")
+
+
+# 初始化默认服务
+def init_services():
+    """初始化所有默认服务"""
+    # 预注册服务
+    get_llm_service()
+    get_react_agent()
+    get_mcp_tool_registry()
+    get_session_manager()
+    get_conversation_logger()

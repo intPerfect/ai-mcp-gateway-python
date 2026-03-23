@@ -1,7 +1,14 @@
+# -*- coding: utf-8 -*-
 """
-Session domain
+Session Domain - 会话领域
 """
-from app.domain.session.service import SessionManagementService, session_manager
+from app.domain.session.service import (
+    SessionManagementService,
+    session_manager,
+    WebSocketSessionManager,
+    ws_session_manager,
+    PendingSession
+)
 from app.domain.session.message_handler import MessageHandler
 from app.domain.session.models import (
     SessionConfig,
@@ -16,6 +23,9 @@ from app.domain.session.models import (
 __all__ = [
     "SessionManagementService",
     "session_manager",
+    "WebSocketSessionManager",
+    "ws_session_manager",
+    "PendingSession",
     "MessageHandler",
     "SessionConfig",
     "HandleMessageCommand",

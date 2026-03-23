@@ -8,11 +8,8 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.api.mcp_gateway import router as mcp_router
-from app.api.chat import websocket_handler, router as chat_router, load_tools_from_db
-from app.api.tools import router as tools_router
-from app.api.openapi_import import router as openapi_router
-from app.api.apikeys import router as apikeys_router
+from app.api.routers import mcp_router, chat_router, tools_router, openapi_router, apikeys_router
+from app.api.routers.chat import websocket_handler, load_tools_from_db
 from app.services.mcp_tool_registry import mcp_tool_registry
 
 # Configure logging

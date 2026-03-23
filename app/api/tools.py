@@ -134,7 +134,7 @@ async def health_check_tool(
         tool_name: 工具名称
     """
     try:
-        from app.infrastructure.repository import McpGatewayRepository
+        from app.infrastructure.database import McpGatewayRepository
         
         repository = McpGatewayRepository(db)
         tool = await repository.get_tool_by_name("gateway_001", tool_name)

@@ -1,11 +1,14 @@
+# -*- coding: utf-8 -*-
 """
-Data Repository for MCP Gateway v3.0
+Database Repository - 数据仓库
+数据访问层，封装数据库操作
 """
 from typing import List, Optional
 from datetime import datetime
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.infrastructure.models import (
+
+from app.infrastructure.database.models import (
     McpGateway,
     McpGatewayAuth,
     McpGatewayTool,
