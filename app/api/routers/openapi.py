@@ -84,7 +84,8 @@ async def import_openapi(
                     tool_description=tool.description,
                     tool_version="1.0.0",
                     protocol_id=protocol_id,
-                    protocol_type="http"
+                    protocol_type="http",
+                    microservice_id=request.microservice_id
                 )
                 db.add(tool_config)
                 

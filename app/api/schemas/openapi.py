@@ -13,6 +13,7 @@ class OpenAPIImportRequest(BaseModel):
     service_url: str
     openapi_url: Optional[str] = None
     openapi_spec: Optional[Dict] = None
+    microservice_id: Optional[int] = None  # 绑定到微服务
 
 
 class ParameterInfo(BaseModel):

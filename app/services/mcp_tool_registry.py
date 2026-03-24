@@ -3,6 +3,7 @@
 MCP Tool Registry v3.0 - 动态工具注册服务
 从数据库读取接口配置，健康检查后动态注册MCP工具
 """
+import asyncio
 import json
 import logging
 from typing import Dict, Any, List, Optional, Callable
@@ -10,7 +11,7 @@ from dataclasses import dataclass, field
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database import McpGatewayRepository
+from app.infrastructure.database import McpGatewayRepository, async_session_factory
 from app.infrastructure.database.models import McpGatewayTool, McpProtocolHttp
 
 logger = logging.getLogger(__name__)
@@ -338,6 +339,41 @@ class McpToolRegistry:
             "additionalProperties": False
         }
     
+    async def _update_tool_status_independent(
+        self,
+        tool_id: int,
+        call_code: str = None,
+        is_error: bool = False
+    ) -> None:
+        """
+        使用独立的数据库session更新工具调用状态
+        这样可以避免多个并发工具调用共享同一个session导致的阻塞问题
+        """
+        try:
+            async with async_session_factory() as session:
+                async with session.begin():
+                    repo = McpGatewayRepository(session)
+                    # 先获取当前状态
+                    tool = await repo.get_tool_by_id(tool_id)
+                    if not tool:
+                        return
+                        
+                    current_call_count = tool.call_count or 0
+                    current_error_count = tool.error_count or 0
+                        
+                    new_call_count = current_call_count + 1
+                    new_error_count = current_error_count + (1 if is_error else 0)
+                    new_call_status = calculate_status_by_error_rate(new_call_count, new_error_count)
+                        
+                    await repo.update_tool_call_status(
+                        tool_id=tool_id,
+                        call_status=new_call_status,
+                        call_code=call_code,
+                        is_error=is_error
+                    )
+        except Exception as e:
+            logger.warning(f"更新工具调用状态失败: {tool_id} - {str(e)}")
+    
     def _create_http_handler(
         self,
         http_url: str,
@@ -349,44 +385,37 @@ class McpToolRegistry:
     ) -> Callable:
         """
         创建HTTP调用handler
-        
+            
         支持多种参数位置：path/query/body/form/header
         """
-        
+            
         async def handler(args: Dict[str, Any]) -> Any:
-            # 获取当前工具的调用统计
+            # 初始化调用统计（使用缓存的值避免额外数据库查询）
             current_call_count = 0
             current_error_count = 0
-            if tool_id and self._repository:
-                try:
-                    tool = await self._repository.get_tool_by_id(tool_id)
-                    if tool:
-                        current_call_count = tool.call_count or 0
-                        current_error_count = tool.error_count or 0
-                except Exception:
-                    pass
-            
+                
             try:
+                # 直接执行HTTP请求，不再预先查询数据库
                 async with httpx.AsyncClient(timeout=timeout / 1000) as client:
                     # 根据mappings构建请求数据
                     request_parts = self._build_request_parts(mappings, args)
-                    
+                        
                     # 替换URL路径参数
                     final_url = http_url
                     for key, value in request_parts["path"].items():
                         placeholder = f"{{{key}}}"
                         if placeholder in final_url:
                             final_url = final_url.replace(placeholder, str(value))
-                    
+                        
                     # 获取查询参数和请求体
                     query_params = request_parts["query"]
                     body_data = request_parts["body"]
                     form_data = request_parts["form"]
                     header_params = request_parts["header"]
-                    
+                        
                     # 合并header
                     final_headers = {**http_headers, **header_params}
-                    
+                        
                     if http_method.upper() == "GET":
                         response = await client.get(
                             final_url,
@@ -409,18 +438,18 @@ class McpToolRegistry:
                             params=query_params if query_params else None,
                             headers=final_headers
                         )
-                    
+                        
                     # 解析响应
                     response_data = None
                     try:
                         response_data = response.json()
                     except:
                         response_data = {"data": response.text}
-                    
+                        
                     # 判断本次调用是否为错误
                     is_error = False
                     call_code = str(response.status_code)
-                    
+                        
                     if response.status_code >= 400:
                         # HTTP错误
                         is_error = True
@@ -430,80 +459,56 @@ class McpToolRegistry:
                         if biz_code and biz_code != "0000":
                             is_error = True
                             call_code = str(biz_code)
-                    
-                    # 更新调用统计和状态
-                    if tool_id and self._repository:
-                        try:
-                            new_call_count = current_call_count + 1
-                            new_error_count = current_error_count + (1 if is_error else 0)
-                            new_call_status = calculate_status_by_error_rate(new_call_count, new_error_count)
-                            
-                            await self._repository.update_tool_call_status(
+                        
+                    # 使用独立session异步更新调用状态（不阻塞HTTP响应返回）
+                    if tool_id:
+                        asyncio.create_task(
+                            self._update_tool_status_independent(
                                 tool_id=tool_id,
-                                call_status=new_call_status,
                                 call_code=call_code,
                                 is_error=is_error
                             )
-                        except Exception as e:
-                            logger.warning(f"更新工具调用状态失败: {tool_id} - {str(e)}")
-                    
+                        )
+                        
                     if response.status_code < 400:
                         return response_data
                     else:
                         return {"error": f"HTTP {response.status_code}: {response.text}", **response_data}
-                        
+                            
             except httpx.TimeoutException:
-                # 超时 -> 记录错误
-                if tool_id and self._repository:
-                    try:
-                        new_call_count = current_call_count + 1
-                        new_error_count = current_error_count + 1
-                        new_call_status = calculate_status_by_error_rate(new_call_count, new_error_count)
-                        
-                        await self._repository.update_tool_call_status(
+                # 使用独立session异步更新错误状态
+                if tool_id:
+                    asyncio.create_task(
+                        self._update_tool_status_independent(
                             tool_id=tool_id,
-                            call_status=new_call_status,
                             call_code="TIMEOUT",
                             is_error=True
                         )
-                    except Exception as e:
-                        logger.warning(f"更新工具调用状态失败: {tool_id} - {str(e)}")
+                    )
                 return {"error": "请求超时"}
             except httpx.ConnectError:
-                # 连接失败 -> 记录错误
-                if tool_id and self._repository:
-                    try:
-                        new_call_count = current_call_count + 1
-                        new_error_count = current_error_count + 1
-                        new_call_status = calculate_status_by_error_rate(new_call_count, new_error_count)
-                        
-                        await self._repository.update_tool_call_status(
+                # 使用独立session异步更新错误状态
+                if tool_id:
+                    asyncio.create_task(
+                        self._update_tool_status_independent(
                             tool_id=tool_id,
-                            call_status=new_call_status,
                             call_code="CONNECT_ERROR",
                             is_error=True
                         )
-                    except Exception as e:
-                        logger.warning(f"更新工具调用状态失败: {tool_id} - {str(e)}")
+                    )
                 return {"error": f"连接失败: {http_url}"}
             except Exception as e:
-                # 其他异常 -> 记录错误
-                if tool_id and self._repository:
-                    try:
-                        new_call_count = current_call_count + 1
-                        new_error_count = current_error_count + 1
-                        new_call_status = calculate_status_by_error_rate(new_call_count, new_error_count)
-                        
-                        await self._repository.update_tool_call_status(
+                # 使用独立session异步更新错误状态
+                if tool_id:
+                    asyncio.create_task(
+                        self._update_tool_status_independent(
                             tool_id=tool_id,
-                            call_status=new_call_status,
                             call_code="EXCEPTION",
                             is_error=True
                         )
-                    except Exception as err:
-                        logger.warning(f"更新工具调用状态失败: {tool_id} - {str(err)}")
+                    )
                 return {"error": str(e)}
-        
+            
         return handler
     
     def _build_request_parts(self, mappings: List, args: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
