@@ -17,7 +17,7 @@ class McpMicroservice(Base):
     name = Column(String(128), unique=True, nullable=False)
     http_base_url = Column(String(512), nullable=False)
     description = Column(String(512), nullable=True)
-    business_line = Column(String(128), nullable=True)
+    business_line_id = Column(BigInteger, nullable=True)  # 所属业务线ID
     health_status = Column(String(16), default='unknown')
     last_check_time = Column(DateTime, nullable=True)
     status = Column(SmallInteger, nullable=False, default=1)
@@ -35,6 +35,7 @@ class McpGateway(Base):
     gateway_desc = Column(String(512), nullable=True)
     version = Column(String(16), default='1.0.0')
     auth = Column(SmallInteger, default=0)
+    business_line_id = Column(BigInteger, nullable=True)  # 所属业务线ID (v8.0)
     status = Column(SmallInteger, nullable=False, default=1)
     create_time = Column(DateTime, default=datetime.now)
     update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -52,6 +53,19 @@ class McpGatewayAuth(Base):
     rate_limit = Column(Integer, default=1000)
     expire_time = Column(DateTime, nullable=True)
     remark = Column(String(256), nullable=True)
+    status = Column(SmallInteger, nullable=False, default=1)
+    create_time = Column(DateTime, default=datetime.now)
+    update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class McpGatewayMicroservice(Base):
+    """网关-微服务绑定关系"""
+    __tablename__ = "mcp_gateway_microservice"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    gateway_id = Column(String(64), nullable=False)
+    microservice_id = Column(BigInteger, nullable=False)
+    bind_time = Column(DateTime, default=datetime.now)
     status = Column(SmallInteger, nullable=False, default=1)
     create_time = Column(DateTime, default=datetime.now)
     update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -157,3 +171,144 @@ class McpProtocolMapping(Base):
     sort_order = Column(Integer, default=0)
     create_time = Column(DateTime, default=datetime.now)
     update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+# ============================================
+# RBAC 权限系统模型
+# ============================================
+
+class SysBusinessLine(Base):
+    """业务线表"""
+    __tablename__ = "sys_business_line"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    line_code = Column(String(64), unique=True, nullable=False)
+    line_name = Column(String(128), nullable=False)
+    description = Column(String(512), nullable=True)
+    status = Column(SmallInteger, nullable=False, default=1)
+    create_time = Column(DateTime, default=datetime.now)
+    update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class SysUserBusinessLine(Base):
+    """用户-业务线关联表"""
+    __tablename__ = "sys_user_business_line"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False)
+    business_line_id = Column(BigInteger, nullable=False)
+    is_admin = Column(SmallInteger, default=0)  # 是否该业务线管理员
+    create_time = Column(DateTime, default=datetime.now)
+
+
+class SysUser(Base):
+    """用户表"""
+    __tablename__ = "sys_user"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    username = Column(String(64), unique=True, nullable=False)
+    password_hash = Column(String(128), nullable=False)
+    real_name = Column(String(64), nullable=True)
+    email = Column(String(128), nullable=True)
+    phone = Column(String(32), nullable=True)
+    avatar = Column(String(256), nullable=True)
+    status = Column(SmallInteger, nullable=False, default=1)
+    last_login_time = Column(DateTime, nullable=True)
+    last_login_ip = Column(String(64), nullable=True)
+    create_time = Column(DateTime, default=datetime.now)
+    update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class SysRole(Base):
+    """角色表"""
+    __tablename__ = "sys_role"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    role_code = Column(String(64), unique=True, nullable=False)
+    role_name = Column(String(128), nullable=False)
+    description = Column(String(512), nullable=True)
+    business_line_id = Column(BigInteger, nullable=True)  # 所属业务线ID，NULL表示全局角色
+    is_system = Column(SmallInteger, nullable=False, default=0)
+    status = Column(SmallInteger, nullable=False, default=1)
+    create_time = Column(DateTime, default=datetime.now)
+    update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class SysUserRole(Base):
+    """用户角色关联表"""
+    __tablename__ = "sys_user_role"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False)
+    role_id = Column(BigInteger, nullable=False)
+    create_time = Column(DateTime, default=datetime.now)
+
+
+class SysResource(Base):
+    """资源表"""
+    __tablename__ = "sys_resource"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    resource_code = Column(String(128), unique=True, nullable=False)
+    resource_name = Column(String(128), nullable=False)
+    resource_type = Column(String(32), default='menu')
+    parent_id = Column(BigInteger, default=0)
+    api_path = Column(String(256), nullable=True)
+    icon = Column(String(64), nullable=True)
+    sort_order = Column(Integer, default=0)
+    status = Column(SmallInteger, nullable=False, default=1)
+    create_time = Column(DateTime, default=datetime.now)
+    update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class SysPermission(Base):
+    """权限表"""
+    __tablename__ = "sys_permission"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    permission_code = Column(String(128), unique=True, nullable=False)
+    permission_name = Column(String(128), nullable=False)
+    resource_id = Column(BigInteger, nullable=False)
+    action = Column(String(32), nullable=False)
+    description = Column(String(512), nullable=True)
+    status = Column(SmallInteger, nullable=False, default=1)
+    create_time = Column(DateTime, default=datetime.now)
+    update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class SysRolePermission(Base):
+    """角色权限关联表"""
+    __tablename__ = "sys_role_permission"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    role_id = Column(BigInteger, nullable=False)
+    permission_id = Column(BigInteger, nullable=False)
+    create_time = Column(DateTime, default=datetime.now)
+
+
+class SysGatewayPermission(Base):
+    """网关权限配置"""
+    __tablename__ = "sys_gateway_permission"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    role_id = Column(BigInteger, nullable=False)
+    gateway_id = Column(String(64), nullable=False)
+    can_create = Column(SmallInteger, default=0)
+    can_read = Column(SmallInteger, default=0)
+    can_update = Column(SmallInteger, default=0)
+    can_delete = Column(SmallInteger, default=0)
+    can_chat = Column(SmallInteger, default=0)
+    create_time = Column(DateTime, default=datetime.now)
+
+
+class SysLoginLog(Base):
+    """登录日志表"""
+    __tablename__ = "sys_login_log"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=True)
+    username = Column(String(64), nullable=True)
+    login_ip = Column(String(64), nullable=True)
+    login_time = Column(DateTime, default=datetime.now)
+    login_status = Column(SmallInteger, default=1)
+    fail_reason = Column(String(256), nullable=True)

@@ -52,11 +52,12 @@ async def get_tools_status():
 
 @router.post("/tools/reload")
 async def reload_tools(
-    gateway_id: str = "gateway_001",
+    gateway_id: str = None,
+    force: bool = False,
     db: AsyncSession = Depends(get_db_session)
 ):
-    """重新加载工具"""
-    result = await mcp_tool_registry.load_tools_from_db(db, gateway_id)
+    """重新加载工具，如果 gateway_id 为 None 则加载所有工具"""
+    result = await mcp_tool_registry.load_tools_from_db(db, gateway_id, force_reload=force)
     return Result.success(result)
 
 

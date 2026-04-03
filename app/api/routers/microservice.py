@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import get_db_session
 from app.infrastructure.database import McpGatewayRepository
-from app.infrastructure.database.models import McpMicroservice
+from app.infrastructure.database.models import McpMicroservice, SysBusinessLine
 from app.api.schemas.microservice import (
     MicroserviceCreate,
     MicroserviceUpdate,
@@ -17,6 +17,7 @@ from app.api.schemas.microservice import (
     ToolEnabledRequest
 )
 from app.utils.result import Result, PageResult
+from app.api.routers.auth import require_auth, require_permission, UserInfo as CurrentUser
 
 logger = logging.getLogger(__name__)
 
@@ -29,23 +30,46 @@ router = APIRouter()
 
 @router.get("/microservices")
 async def list_microservices(
+    current_user: CurrentUser = Depends(require_auth),
     db: AsyncSession = Depends(get_db_session)
 ) -> PageResult:
-    """获取微服务列表"""
+    """获取微服务列表（按业务线过滤）"""
     try:
         repository = McpGatewayRepository(db)
         microservices = await repository.get_all_microservices()
         
+        # 获取用户可访问的业务线
+        user_bl_ids = [bl.id for bl in current_user.business_lines] if current_user.business_lines else []
+        
+        # 过滤微服务（SUPER_ADMIN 可以看到所有微服务）
+        if "SUPER_ADMIN" in current_user.roles:
+            filtered_microservices = microservices
+        else:
+            filtered_microservices = [
+                ms for ms in microservices
+                if ms.business_line_id is None or (user_bl_ids and ms.business_line_id in user_bl_ids)
+            ]
+        
+        # 获取业务线映射
+        business_line_map = {}
+        
         # 获取每个微服务的工具数量
         result = []
-        for ms in microservices:
+        for ms in filtered_microservices:
             tools = await repository.get_tools_by_microservice(ms.id)
+            
+            # 获取业务线名称
+            if ms.business_line_id and ms.business_line_id not in business_line_map:
+                bl = await db.get(SysBusinessLine, ms.business_line_id)
+                business_line_map[ms.business_line_id] = bl.line_name if bl else None
+            
             ms_dict = {
                 "id": ms.id,
                 "name": ms.name,
                 "http_base_url": ms.http_base_url,
                 "description": ms.description,
-                "business_line": ms.business_line,
+                "business_line_id": ms.business_line_id,
+                "business_line": business_line_map.get(ms.business_line_id) or "未分类",
                 "health_status": ms.health_status,
                 "last_check_time": ms.last_check_time.isoformat() if ms.last_check_time else None,
                 "status": ms.status,
@@ -64,6 +88,7 @@ async def list_microservices(
 @router.post("/microservices")
 async def create_microservice(
     request: MicroserviceCreate,
+    current_user: CurrentUser = Depends(require_permission("microservice:create")),
     db: AsyncSession = Depends(get_db_session)
 ) -> Result:
     """创建微服务"""
@@ -79,19 +104,25 @@ async def create_microservice(
             name=request.name,
             http_base_url=request.http_base_url,
             description=request.description,
-            business_line=request.business_line,
+            business_line_id=request.business_line_id,
             health_status="unknown",
             status=1
         )
         
         created = await repository.create_microservice(microservice)
         
+        # 获取业务线名称
+        bl_name = None
+        if created.business_line_id:
+            bl = await repository.get_business_line_by_id(created.business_line_id)
+            bl_name = bl.line_name if bl else None
+        
         return Result.success({
             "id": created.id,
             "name": created.name,
             "http_base_url": created.http_base_url,
             "description": created.description,
-            "business_line": created.business_line
+            "business_line": bl_name
         })
     except Exception as e:
         logger.error(f"创建微服务失败: {str(e)}")
@@ -102,6 +133,7 @@ async def create_microservice(
 async def update_microservice(
     microservice_id: int,
     request: MicroserviceUpdate,
+    current_user: CurrentUser = Depends(require_permission("microservice:update")),
     db: AsyncSession = Depends(get_db_session)
 ) -> Result:
     """更新微服务"""
@@ -119,19 +151,25 @@ async def update_microservice(
             name=request.name,
             http_base_url=request.http_base_url,
             description=request.description,
-            business_line=request.business_line,
+            business_line_id=request.business_line_id,
             status=request.status
         )
         
         if not updated:
             return Result.not_found("微服务不存在")
         
+        # 获取业务线名称
+        bl_name = None
+        if updated.business_line_id:
+            bl = await repository.get_business_line_by_id(updated.business_line_id)
+            bl_name = bl.line_name if bl else None
+        
         return Result.success({
             "id": updated.id,
             "name": updated.name,
             "http_base_url": updated.http_base_url,
             "description": updated.description,
-            "business_line": updated.business_line,
+            "business_line": bl_name,
             "status": updated.status
         })
     except Exception as e:
@@ -142,6 +180,7 @@ async def update_microservice(
 @router.delete("/microservices/{microservice_id}")
 async def delete_microservice(
     microservice_id: int,
+    current_user: CurrentUser = Depends(require_permission("microservice:delete")),
     db: AsyncSession = Depends(get_db_session)
 ) -> Result:
     """删除微服务"""
@@ -168,6 +207,7 @@ async def delete_microservice(
 @router.post("/microservices/{microservice_id}/check")
 async def check_microservice_health(
     microservice_id: int,
+    current_user: CurrentUser = Depends(require_permission("microservice:read")),
     db: AsyncSession = Depends(get_db_session)
 ) -> Result:
     """微服务健康检查"""
@@ -217,6 +257,7 @@ async def check_microservice_health(
 @router.get("/microservices/{microservice_id}/tools")
 async def get_microservice_tools(
     microservice_id: int,
+    current_user: CurrentUser = Depends(require_permission("tool:read")),
     db: AsyncSession = Depends(get_db_session)
 ) -> PageResult:
     """获取微服务的工具列表"""
@@ -258,6 +299,7 @@ async def get_microservice_tools(
 
 @router.get("/tools/all")
 async def list_all_tools(
+    current_user: CurrentUser = Depends(require_permission("tool:read")),
     db: AsyncSession = Depends(get_db_session)
 ) -> PageResult:
     """获取所有工具列表（包含微服务信息）"""
@@ -294,6 +336,7 @@ async def list_all_tools(
 
 @router.get("/tools/unbind")
 async def list_unbind_tools(
+    current_user: CurrentUser = Depends(require_permission("tool:read")),
     db: AsyncSession = Depends(get_db_session)
 ) -> PageResult:
     """获取未绑定微服务的工具列表"""
@@ -322,6 +365,7 @@ async def list_unbind_tools(
 async def bind_tool(
     tool_id: int,
     request: ToolBindRequest,
+    current_user: CurrentUser = Depends(require_permission("tool:update")),
     db: AsyncSession = Depends(get_db_session)
 ) -> Result:
     """绑定工具到微服务"""
@@ -349,6 +393,7 @@ async def bind_tool(
 @router.put("/tools/{tool_id}/unbind")
 async def unbind_tool(
     tool_id: int,
+    current_user: CurrentUser = Depends(require_permission("tool:update")),
     db: AsyncSession = Depends(get_db_session)
 ) -> Result:
     """解绑工具"""
@@ -371,6 +416,7 @@ async def unbind_tool(
 async def update_tool_enabled(
     tool_id: int,
     request: ToolEnabledRequest,
+    current_user: CurrentUser = Depends(require_permission("tool:update")),
     db: AsyncSession = Depends(get_db_session)
 ) -> Result:
     """更新工具启用状态"""

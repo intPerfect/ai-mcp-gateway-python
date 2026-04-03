@@ -8,11 +8,22 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.api.routers import mcp_router, chat_router, tools_router, openapi_router, microservice_router, gateway_router
+from app.api.routers import (
+    mcp_router,
+    chat_router,
+    tools_router,
+    openapi_router,
+    microservice_router,
+    gateway_router,
+    auth_router,
+    user_router,
+    role_router,
+    permission_router,
+    business_line_router,
+)
 from app.api.routers.chat import websocket_handler, load_tools_from_db
 from app.services.mcp_tool_registry import mcp_tool_registry
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -23,29 +34,15 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
-    # Startup
     logger.info("Starting MCP Gateway...")
-
-    # 应用启动时预加载工具，避免第一次WebSocket连接时阻塞
-    try:
-        result = await load_tools_from_db()
-        logger.info(
-            f"启动时工具加载完成: registered={len(result.get('registered', []))}, failed={len(result.get('failed', []))}"
-        )
-    except Exception as e:
-        logger.error(f"启动时加载工具失败: {e}")
-
     logger.info(f"MCP Gateway started on port {settings.server_port}")
 
     yield
 
-    # Shutdown
     logger.info("Shutting down MCP Gateway...")
     logger.info("MCP Gateway stopped")
 
 
-# Create FastAPI application
 app = FastAPI(
     title="AI MCP Gateway",
     description="Python implementation of MCP (Model Context Protocol) Gateway",
@@ -53,7 +50,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -62,16 +58,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register routers
 app.include_router(mcp_router, prefix="/api-gateway", tags=["MCP Gateway"])
 app.include_router(tools_router, prefix="/api", tags=["Tools"])
 app.include_router(openapi_router, prefix="/api", tags=["OpenAPI Import"])
 app.include_router(gateway_router, prefix="/api", tags=["Gateway Management"])
 app.include_router(microservice_router, prefix="/api", tags=["Microservice"])
 app.include_router(chat_router, prefix="/api/chat", tags=["Chat"])
+app.include_router(auth_router, tags=["Auth"])
+app.include_router(user_router, tags=["User"])
+app.include_router(role_router, tags=["Role"])
+app.include_router(permission_router, tags=["Permission"])
+app.include_router(business_line_router, tags=["Business Line"])
 
 
-# WebSocket endpoint
 @app.websocket("/ws/chat")
 async def chat_websocket(websocket: WebSocket):
     await websocket_handler(websocket)
@@ -79,13 +78,11 @@ async def chat_websocket(websocket: WebSocket):
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
     return {"service": "AI MCP Gateway", "version": "1.0.0", "status": "running"}
 
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
     return {"status": "healthy"}
 
 
@@ -93,13 +90,18 @@ if __name__ == "__main__":
     from app.utils.port_manager import PortManager
     import uvicorn
 
-    # 清理端口
     port = settings.server_port
     PortManager.kill_port(port)
 
+    # 设置环境变量控制热更新
+    import os
+
+    reload = os.getenv("RELOAD", "true").lower() in ("true", "1", "yes")
+
     uvicorn.run(
-        "app.main:app",
+        "main:app",
         host=settings.server_host,
         port=port,
-        reload=False,
+        reload=reload,
+        reload_dirs=["app"] if reload else None,
     )

@@ -206,10 +206,22 @@ class McpToolRegistry:
     async def load_tools_from_db(
         self,
         db_session: AsyncSession,
-        gateway_id: str = "gateway_001"
+        gateway_id: str = None,
+        force_reload: bool = False
     ) -> Dict[str, Any]:
-        """从数据库加载工具配置"""
+        """从数据库加载工具配置，如果 gateway_id 为 None 则加载所有工具
+        
+        Args:
+            db_session: 数据库会话
+            gateway_id: 网关ID，None 表示加载所有工具
+            force_reload: 是否强制重新加载（会清空现有工具）
+        """
         self._repository = McpGatewayRepository(db_session)
+        
+        # 强制重新加载时清空现有工具
+        if force_reload:
+            self._tools.clear()
+            self._tool_status.clear()
         
         tools = await self._repository.get_tools_by_gateway_id(gateway_id)
         
@@ -264,10 +276,8 @@ class McpToolRegistry:
                 ):
                     result["registered"].append(tool.tool_name)
                 else:
-                    result["failed"].append({
-                        "name": tool.tool_name,
-                        "error": "工具已存在"
-                    })
+                    # 工具已存在，跳过（静默处理，支持增量加载）
+                    pass
                     
             except Exception as e:
                 logger.error(f"加载工具失败: {tool.tool_name} - {str(e)}")
@@ -399,6 +409,11 @@ class McpToolRegistry:
                 async with httpx.AsyncClient(timeout=timeout / 1000) as client:
                     # 根据mappings构建请求数据
                     request_parts = self._build_request_parts(mappings, args)
+                    
+                    # 调试日志：显示参数映射结果
+                    logger.info(f"[工具调用] handler收到参数: {args}")
+                    logger.info(f"[工具调用] mappings数量: {len(mappings) if mappings else 0}")
+                    logger.info(f"[工具调用] request_parts: {request_parts}")
                         
                     # 替换URL路径参数
                     final_url = http_url
@@ -415,7 +430,13 @@ class McpToolRegistry:
                         
                     # 合并header
                     final_headers = {**http_headers, **header_params}
-                        
+                    
+                    # 调试日志：显示最终请求信息
+                    logger.info(f"[工具调用] 最终URL: {final_url}")
+                    logger.info(f"[工具调用] HTTP方法: {http_method.upper()}")
+                    logger.info(f"[工具调用] 查询参数: {query_params}")
+                    logger.info(f"[工具调用] 请求体: {body_data}")
+                    
                     if http_method.upper() == "GET":
                         response = await client.get(
                             final_url,
@@ -431,6 +452,7 @@ class McpToolRegistry:
                             headers=final_headers
                         )
                     else:
+                        # 对于 POST/PUT/PATCH 等请求，也需要传递 query_params
                         response = await client.request(
                             method=http_method,
                             url=final_url,

@@ -1,6 +1,10 @@
--- AI MCP Gateway Database Schema v5.0
+-- AI MCP Gateway Database Schema v9.0
 -- MySQL 8.0+
 -- v5.0 更新：网关管理功能升级，新增LLM配置表
+-- v6.0 更新：新增RBAC权限系统，支持组织架构管理
+-- v7.0 更新：网关-微服务绑定关系，网关权限配置
+-- v8.0 更新：业务线权限分离，用户-业务线关联
+-- v9.0 更新：移除部门/团队概念，统一为业务线架构
 
 CREATE DATABASE IF NOT EXISTS `ai_mcp_gateway_v2` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE `ai_mcp_gateway_v2`;
@@ -11,6 +15,7 @@ USE `ai_mcp_gateway_v2`;
 DROP TABLE IF EXISTS `mcp_protocol_mapping`;
 DROP TABLE IF EXISTS `mcp_protocol_http`;
 DROP TABLE IF EXISTS `mcp_gateway_tool`;
+DROP TABLE IF EXISTS `mcp_gateway_microservice`;
 DROP TABLE IF EXISTS `mcp_microservice`;
 DROP TABLE IF EXISTS `mcp_llm_key`;
 DROP TABLE IF EXISTS `mcp_llm`;
@@ -25,14 +30,15 @@ CREATE TABLE `mcp_microservice` (
   `name` varchar(128) NOT NULL COMMENT '微服务名称',
   `http_base_url` varchar(512) NOT NULL COMMENT 'HTTP基础URL',
   `description` varchar(512) DEFAULT NULL COMMENT '服务描述',
-  `business_line` varchar(128) DEFAULT NULL COMMENT '业务线',
+  `business_line_id` bigint DEFAULT NULL COMMENT '所属业务线ID',
   `health_status` varchar(16) DEFAULT 'unknown' COMMENT '健康状态: healthy/unhealthy/unknown',
   `last_check_time` datetime DEFAULT NULL COMMENT '最后检查时间',
   `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_name` (`name`)
+  UNIQUE KEY `uk_name` (`name`),
+  KEY `idx_business_line` (`business_line_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MCP微服务配置';
 
 CREATE TABLE `mcp_gateway` (
@@ -42,12 +48,14 @@ CREATE TABLE `mcp_gateway` (
   `gateway_desc` varchar(512) DEFAULT NULL COMMENT '网关描述',
   `version` varchar(16) DEFAULT '1.0.0' COMMENT '版本号',
   `auth` tinyint(1) DEFAULT 0 COMMENT '是否启用认证: 0-否 1-是',
+  `business_line_id` bigint DEFAULT NULL COMMENT '所属业务线ID',
   `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_gateway_id` (`gateway_id`),
-  KEY `idx_status` (`status`)
+  KEY `idx_status` (`status`),
+  KEY `idx_business_line` (`business_line_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MCP网关配置';
 
 -- ============================================
@@ -69,6 +77,23 @@ CREATE TABLE `mcp_gateway_auth` (
   UNIQUE KEY `uk_key_id` (`key_id`),
   KEY `idx_gateway_id` (`gateway_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MCP网关认证';
+
+-- ============================================
+-- 网关-微服务绑定表
+-- ============================================
+CREATE TABLE `mcp_gateway_microservice` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `gateway_id` varchar(64) NOT NULL COMMENT '网关ID',
+  `microservice_id` bigint NOT NULL COMMENT '微服务ID',
+  `bind_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '绑定时间',
+  `status` tinyint(1) DEFAULT 1 COMMENT '绑定状态: 0-禁用 1-启用',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_gateway_ms` (`gateway_id`, `microservice_id`),
+  KEY `idx_gateway_id` (`gateway_id`),
+  KEY `idx_microservice_id` (`microservice_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网关-微服务绑定关系';
 
 -- ============================================
 -- LLM 配置表
@@ -156,7 +181,7 @@ CREATE TABLE `mcp_protocol_http` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='HTTP协议配置';
 
 -- ============================================
--- MCP Protocol 参数映射表 (核心优化)
+-- MCP Protocol 参数映射表
 -- ============================================
 CREATE TABLE `mcp_protocol_mapping` (
   `id` bigint NOT NULL AUTO_INCREMENT,
@@ -179,21 +204,179 @@ CREATE TABLE `mcp_protocol_mapping` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MCP参数映射配置';
 
 -- ============================================
--- 初始数据
+-- RBAC 权限系统表 v9.0
 -- ============================================
-INSERT INTO `mcp_gateway` (`id`, `gateway_id`, `gateway_name`, `gateway_desc`, `version`, `auth`, `status`)
-VALUES (1, 'gateway_001', '商品服务网关', 'Product Service MCP Gateway', '1.0.0', 0, 1);
 
--- 默认 API Key (仅供测试使用，生产环境请删除)
--- API Key: sk-defaultkey001:Xy7zA1b2C3d4E5f6G7h8I9j0KlMnOpQrStUvWxYz
-INSERT INTO `mcp_gateway_auth` (`id`, `gateway_id`, `key_id`, `api_key_hash`, `key_preview`, `rate_limit`, `expire_time`, `remark`, `status`)
-VALUES (1, 'gateway_001', 'defaultkey001', '$2b$12$9lHqeqRUeFzcAs9ixbFqwOsYYwoQakSuwZLdGfbYKelCGShl0X6ba', 'sk-defaultke...WxYz', 360000, '2099-12-31 23:59:59', '默认测试Key', 1);
+-- 先删除RBAC相关表（按依赖关系倒序删除）
+DROP TABLE IF EXISTS `sys_login_log`;
+DROP TABLE IF EXISTS `sys_gateway_permission`;
+DROP TABLE IF EXISTS `sys_user_business_line`;
+DROP TABLE IF EXISTS `sys_role_permission`;
+DROP TABLE IF EXISTS `sys_user_role`;
+DROP TABLE IF EXISTS `sys_permission`;
+DROP TABLE IF EXISTS `sys_resource`;
+DROP TABLE IF EXISTS `sys_role`;
+DROP TABLE IF EXISTS `sys_user`;
+DROP TABLE IF EXISTS `sys_business_line`;
 
 -- ============================================
--- LLM 默认配置
+-- 业务线表
 -- ============================================
-INSERT INTO `mcp_llm` (`id`, `llm_id`, `llm_name`, `llm_type`, `base_url`, `default_model`, `description`, `status`) VALUES
-(1, 'qwen', '通义千问', 'qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus', '阿里云通义千问大模型', 1),
-(2, 'deepseek', 'DeepSeek', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-chat', 'DeepSeek大模型', 1),
-(3, 'minimax', 'MiniMax', 'minimax', 'https://api.minimax.chat/v1', 'abab6.5s-chat', 'MiniMax大模型', 1),
-(4, 'openai', 'OpenAI', 'openai', 'https://api.openai.com/v1', 'gpt-4o', 'OpenAI GPT模型', 1);
+CREATE TABLE `sys_business_line` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `line_code` varchar(64) NOT NULL COMMENT '业务线编码(如: OA, PRODUCT)',
+  `line_name` varchar(128) NOT NULL COMMENT '业务线名称(如: OA办公, 商品服务)',
+  `description` varchar(512) DEFAULT NULL COMMENT '描述',
+  `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_line_code` (`line_code`),
+  KEY `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='业务线表';
+
+-- ============================================
+-- 用户表
+-- ============================================
+CREATE TABLE `sys_user` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `username` varchar(64) NOT NULL COMMENT '用户名',
+  `password_hash` varchar(128) NOT NULL COMMENT 'bcrypt密码哈希',
+  `real_name` varchar(64) DEFAULT NULL COMMENT '真实姓名',
+  `email` varchar(128) DEFAULT NULL COMMENT '邮箱',
+  `phone` varchar(32) DEFAULT NULL COMMENT '手机号',
+  `avatar` varchar(256) DEFAULT NULL COMMENT '头像URL',
+  `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
+  `last_login_time` datetime DEFAULT NULL COMMENT '最后登录时间',
+  `last_login_ip` varchar(64) DEFAULT NULL COMMENT '最后登录IP',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_username` (`username`),
+  KEY `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户表';
+
+-- ============================================
+-- 角色表
+-- ============================================
+CREATE TABLE `sys_role` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `role_code` varchar(64) NOT NULL COMMENT '角色编码(如: SUPER_ADMIN)',
+  `role_name` varchar(128) NOT NULL COMMENT '角色名称',
+  `description` varchar(512) DEFAULT NULL COMMENT '角色描述',
+  `business_line_id` bigint DEFAULT NULL COMMENT '所属业务线ID，NULL表示全局角色',
+  `is_system` tinyint(1) NOT NULL DEFAULT 0 COMMENT '是否系统内置角色: 0-否 1-是',
+  `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_role_code` (`role_code`),
+  KEY `idx_status` (`status`),
+  KEY `idx_business_line` (`business_line_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='角色表';
+
+-- 用户角色关联表
+CREATE TABLE `sys_user_role` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` bigint NOT NULL COMMENT '用户ID',
+  `role_id` bigint NOT NULL COMMENT '角色ID',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_user_role` (`user_id`, `role_id`),
+  KEY `idx_role_id` (`role_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户角色关联表';
+
+-- 用户-业务线关联表
+CREATE TABLE `sys_user_business_line` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` bigint NOT NULL COMMENT '用户ID',
+  `business_line_id` bigint NOT NULL COMMENT '业务线ID',
+  `is_admin` tinyint(1) DEFAULT 0 COMMENT '是否该业务线管理员: 0-否 1-是',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_user_bl` (`user_id`, `business_line_id`),
+  KEY `idx_business_line_id` (`business_line_id`),
+  KEY `idx_is_admin` (`is_admin`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户-业务线关联表';
+
+-- ============================================
+-- 权限表
+-- ============================================
+
+-- 资源表
+CREATE TABLE `sys_resource` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `resource_code` varchar(128) NOT NULL COMMENT '资源编码(如: gateway, microservice)',
+  `resource_name` varchar(128) NOT NULL COMMENT '资源名称',
+  `resource_type` varchar(32) DEFAULT 'menu' COMMENT '资源类型: menu/button/api',
+  `parent_id` bigint DEFAULT 0 COMMENT '父资源ID',
+  `api_path` varchar(256) DEFAULT NULL COMMENT 'API路径',
+  `icon` varchar(64) DEFAULT NULL COMMENT '图标',
+  `sort_order` int DEFAULT 0 COMMENT '排序',
+  `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_resource_code` (`resource_code`),
+  KEY `idx_parent_id` (`parent_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='资源表';
+
+-- 权限表(资源+操作组合)
+CREATE TABLE `sys_permission` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `permission_code` varchar(128) NOT NULL COMMENT '权限编码(如: gateway:create)',
+  `permission_name` varchar(128) NOT NULL COMMENT '权限名称',
+  `resource_id` bigint NOT NULL COMMENT '资源ID',
+  `action` varchar(32) NOT NULL COMMENT '操作: create/read/update/delete',
+  `description` varchar(512) DEFAULT NULL COMMENT '描述',
+  `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_permission_code` (`permission_code`),
+  KEY `idx_resource_id` (`resource_id`),
+  KEY `idx_action` (`action`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='权限表';
+
+-- 角色权限关联表
+CREATE TABLE `sys_role_permission` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `role_id` bigint NOT NULL COMMENT '角色ID',
+  `permission_id` bigint NOT NULL COMMENT '权限ID',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_role_perm` (`role_id`, `permission_id`),
+  KEY `idx_permission_id` (`permission_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='角色权限关联表';
+
+-- 网关权限配置表
+CREATE TABLE `sys_gateway_permission` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `role_id` bigint NOT NULL COMMENT '角色ID',
+  `gateway_id` varchar(64) NOT NULL COMMENT '网关ID',
+  `can_create` tinyint(1) DEFAULT 0 COMMENT '创建权限',
+  `can_read` tinyint(1) DEFAULT 0 COMMENT '查看权限',
+  `can_update` tinyint(1) DEFAULT 0 COMMENT '编辑权限',
+  `can_delete` tinyint(1) DEFAULT 0 COMMENT '删除权限',
+  `can_chat` tinyint(1) DEFAULT 0 COMMENT '对话权限',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_role_gateway` (`role_id`, `gateway_id`),
+  KEY `idx_gateway_id` (`gateway_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网关权限配置';
+
+-- ============================================
+-- 登录日志表
+-- ============================================
+CREATE TABLE `sys_login_log` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` bigint DEFAULT NULL COMMENT '用户ID',
+  `username` varchar(64) DEFAULT NULL COMMENT '用户名',
+  `login_ip` varchar(64) DEFAULT NULL COMMENT '登录IP',
+  `login_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '登录时间',
+  `login_status` tinyint(1) DEFAULT 1 COMMENT '登录状态: 1-成功 0-失败',
+  `fail_reason` varchar(256) DEFAULT NULL COMMENT '失败原因',
+  PRIMARY KEY (`id`),
+  KEY `idx_user_id` (`user_id`),
+  KEY `idx_login_time` (`login_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登录日志表';

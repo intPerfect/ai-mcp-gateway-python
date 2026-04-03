@@ -3,6 +3,7 @@
 Database Repository - 数据仓库
 数据访问层，封装数据库操作
 """
+
 from typing import List, Optional
 from datetime import datetime
 from sqlalchemy import select, and_, update
@@ -16,150 +17,213 @@ from app.infrastructure.database.models import (
     McpProtocolMapping,
     McpMicroservice,
     McpLlm,
-    McpLlmKey
+    McpLlmKey,
+    McpGatewayMicroservice,
+    # RBAC models
+    SysUser,
+    SysRole,
+    SysUserRole,
+    SysResource,
+    SysPermission,
+    SysRolePermission,
+    SysGatewayPermission,
+    SysLoginLog,
+    # Business Line models (v8.0)
+    SysBusinessLine,
+    SysUserBusinessLine,
 )
 
 
 class McpGatewayRepository:
     """MCP网关数据访问层"""
-    
+
     def __init__(self, session: AsyncSession):
         self.session = session
-    
+
+    # ============================================
+    # 业务线管理 (v8.0) - 委托给 session
+    # ============================================
+
+    async def get_all_business_lines(self) -> List[SysBusinessLine]:
+        """获取所有业务线"""
+        stmt = select(SysBusinessLine).where(SysBusinessLine.status == 1)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_business_line_by_id(self, bl_id: int) -> Optional[SysBusinessLine]:
+        """根据ID获取业务线"""
+        return await self.session.get(SysBusinessLine, bl_id)
+
+    # ============================================
+    # 网关管理
+    # ============================================
+
     async def get_gateway_by_id(self, gateway_id: str) -> Optional[McpGateway]:
         """根据gateway_id获取网关配置"""
         stmt = select(McpGateway).where(
-            and_(
-                McpGateway.gateway_id == gateway_id,
-                McpGateway.status == 1
-            )
+            and_(McpGateway.gateway_id == gateway_id, McpGateway.status == 1)
         )
         result = await self.session.execute(stmt)
         return result.scalars().first()
-    
-    async def get_gateway_auth_by_key_id(self, gateway_id: str, key_id: str) -> Optional[McpGatewayAuth]:
+
+    async def get_gateway_auth_by_key_id(
+        self, gateway_id: str, key_id: str
+    ) -> Optional[McpGatewayAuth]:
         """根据gateway_id和key_id获取认证配置（用于bcrypt验证）"""
         stmt = select(McpGatewayAuth).where(
             and_(
                 McpGatewayAuth.gateway_id == gateway_id,
                 McpGatewayAuth.key_id == key_id,
                 McpGatewayAuth.status == 1,
-                McpGatewayAuth.expire_time > datetime.now()
+                McpGatewayAuth.expire_time > datetime.now(),
             )
         )
         result = await self.session.execute(stmt)
         return result.scalars().first()
-    
+
     async def get_gateway_auth_status(self, gateway_id: str) -> Optional[int]:
         """获取网关认证状态"""
         stmt = select(McpGateway.auth).where(McpGateway.gateway_id == gateway_id)
         result = await self.session.execute(stmt)
         return result.scalars().first()
-    
+
+    async def get_gateway_id_by_api_key(self, api_key: str) -> Optional[str]:
+        """通过API Key查找对应的gateway_id"""
+        from app.utils.security import parse_api_key
+
+        key_id = parse_api_key(api_key)
+        if not key_id:
+            return None
+        stmt = select(McpGatewayAuth.gateway_id).where(
+            and_(
+                McpGatewayAuth.key_id == key_id,
+                McpGatewayAuth.status == 1,
+                McpGatewayAuth.expire_time > datetime.now(),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
     async def get_effective_auth_count(self, gateway_id: str) -> int:
         """获取有效认证数量"""
         stmt = select(McpGatewayAuth).where(
             and_(
                 McpGatewayAuth.gateway_id == gateway_id,
                 McpGatewayAuth.status == 1,
-                McpGatewayAuth.expire_time > datetime.now()
+                McpGatewayAuth.expire_time > datetime.now(),
             )
         )
         result = await self.session.execute(stmt)
         return len(result.scalars().all())
-    
-    async def get_tools_by_gateway_id(self, gateway_id: str) -> List[McpGatewayTool]:
-        """获取网关所有工具"""
-        stmt = select(McpGatewayTool).where(McpGatewayTool.gateway_id == gateway_id)
+
+    async def get_tools_by_gateway_id(self, gateway_id: str = None) -> List[McpGatewayTool]:
+        """获取网关所有工具，如果 gateway_id 为 None 则返回所有工具"""
+        if gateway_id:
+            stmt = select(McpGatewayTool).where(McpGatewayTool.gateway_id == gateway_id)
+        else:
+            stmt = select(McpGatewayTool)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
-    
-    async def get_tool_by_name(self, gateway_id: str, tool_name: str) -> Optional[McpGatewayTool]:
+
+    async def get_tool_by_name(
+        self, gateway_id: str, tool_name: str
+    ) -> Optional[McpGatewayTool]:
         """根据名称获取工具"""
         stmt = select(McpGatewayTool).where(
             and_(
                 McpGatewayTool.gateway_id == gateway_id,
-                McpGatewayTool.tool_name == tool_name
+                McpGatewayTool.tool_name == tool_name,
             )
         )
         result = await self.session.execute(stmt)
         return result.scalars().first()
-    
-    async def get_protocol_http_by_id(self, protocol_id: int) -> Optional[McpProtocolHttp]:
+
+    async def get_protocol_http_by_id(
+        self, protocol_id: int
+    ) -> Optional[McpProtocolHttp]:
         """根据protocol_id获取HTTP协议配置"""
         stmt = select(McpProtocolHttp).where(
             and_(
-                McpProtocolHttp.protocol_id == protocol_id,
-                McpProtocolHttp.status == 1
+                McpProtocolHttp.protocol_id == protocol_id, McpProtocolHttp.status == 1
             )
         )
         result = await self.session.execute(stmt)
         return result.scalars().first()
-    
+
     async def get_protocol_mappings(self, protocol_id: int) -> List[McpProtocolMapping]:
         """获取协议的所有参数映射"""
-        stmt = select(McpProtocolMapping).where(
-            McpProtocolMapping.protocol_id == protocol_id
-        ).order_by(McpProtocolMapping.sort_order)
+        stmt = (
+            select(McpProtocolMapping)
+            .where(McpProtocolMapping.protocol_id == protocol_id)
+            .order_by(McpProtocolMapping.sort_order)
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
-    
+
     async def get_protocol_mappings_by_location(
-        self, 
-        protocol_id: int, 
-        param_location: str
+        self, protocol_id: int, param_location: str
     ) -> List[McpProtocolMapping]:
         """
         根据参数位置获取映射
-        
+
         param_location: path/query/body/form/header/file
         """
-        stmt = select(McpProtocolMapping).where(
-            and_(
-                McpProtocolMapping.protocol_id == protocol_id,
-                McpProtocolMapping.param_location == param_location
+        stmt = (
+            select(McpProtocolMapping)
+            .where(
+                and_(
+                    McpProtocolMapping.protocol_id == protocol_id,
+                    McpProtocolMapping.param_location == param_location,
+                )
             )
-        ).order_by(McpProtocolMapping.sort_order)
+            .order_by(McpProtocolMapping.sort_order)
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
-    
+
     async def insert_gateway_auth(self, auth: McpGatewayAuth) -> McpGatewayAuth:
         """插入网关认证记录"""
         self.session.add(auth)
         await self.session.commit()
         await self.session.refresh(auth)
         return auth
-    
+
     # ============================================
     # 微服务管理方法
     # ============================================
-    
+
     async def get_all_microservices(self) -> List[McpMicroservice]:
         """获取所有微服务"""
         stmt = select(McpMicroservice).order_by(McpMicroservice.id.desc())
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
-    
-    async def get_microservice_by_id(self, microservice_id: int) -> Optional[McpMicroservice]:
+
+    async def get_microservice_by_id(
+        self, microservice_id: int
+    ) -> Optional[McpMicroservice]:
         """根据ID获取微服务"""
         stmt = select(McpMicroservice).where(McpMicroservice.id == microservice_id)
         result = await self.session.execute(stmt)
         return result.scalars().first()
-    
+
     async def get_microservice_by_name(self, name: str) -> Optional[McpMicroservice]:
         """根据名称获取微服务"""
         stmt = select(McpMicroservice).where(McpMicroservice.name == name)
         result = await self.session.execute(stmt)
         return result.scalars().first()
-    
-    async def create_microservice(self, microservice: McpMicroservice) -> McpMicroservice:
+
+    async def create_microservice(
+        self, microservice: McpMicroservice
+    ) -> McpMicroservice:
         """创建微服务"""
         self.session.add(microservice)
         await self.session.commit()
         await self.session.refresh(microservice)
         return microservice
-    
-    async def update_microservice(self, microservice_id: int, **kwargs) -> Optional[McpMicroservice]:
+
+    async def update_microservice(
+        self, microservice_id: int, **kwargs
+    ) -> Optional[McpMicroservice]:
         """更新微服务"""
         microservice = await self.get_microservice_by_id(microservice_id)
         if not microservice:
@@ -170,7 +234,7 @@ class McpGatewayRepository:
         await self.session.commit()
         await self.session.refresh(microservice)
         return microservice
-    
+
     async def delete_microservice(self, microservice_id: int) -> bool:
         """删除微服务"""
         microservice = await self.get_microservice_by_id(microservice_id)
@@ -179,8 +243,10 @@ class McpGatewayRepository:
         await self.session.delete(microservice)
         await self.session.commit()
         return True
-    
-    async def update_microservice_health(self, microservice_id: int, health_status: str) -> bool:
+
+    async def update_microservice_health(
+        self, microservice_id: int, health_status: str
+    ) -> bool:
         """更新微服务健康状态"""
         stmt = (
             update(McpMicroservice)
@@ -190,40 +256,48 @@ class McpGatewayRepository:
         await self.session.execute(stmt)
         await self.session.commit()
         return True
-    
+
     # ============================================
     # 工具管理方法
     # ============================================
-    
+
     async def get_all_tools(self) -> List[McpGatewayTool]:
         """获取所有工具"""
         stmt = select(McpGatewayTool).order_by(McpGatewayTool.id.desc())
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
-    
+
     async def get_tool_by_id(self, tool_id: int) -> Optional[McpGatewayTool]:
         """根据ID获取工具"""
         stmt = select(McpGatewayTool).where(McpGatewayTool.tool_id == tool_id)
         result = await self.session.execute(stmt)
         return result.scalars().first()
-    
-    async def get_tools_by_microservice(self, microservice_id: int) -> List[McpGatewayTool]:
+
+    async def get_tools_by_microservice(
+        self, microservice_id: int
+    ) -> List[McpGatewayTool]:
         """获取微服务下的工具"""
-        stmt = select(McpGatewayTool).where(
-            McpGatewayTool.microservice_id == microservice_id
-        ).order_by(McpGatewayTool.id)
+        stmt = (
+            select(McpGatewayTool)
+            .where(McpGatewayTool.microservice_id == microservice_id)
+            .order_by(McpGatewayTool.id)
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
-    
+
     async def get_unbind_tools(self) -> List[McpGatewayTool]:
         """获取未绑定微服务的工具"""
-        stmt = select(McpGatewayTool).where(
-            McpGatewayTool.microservice_id.is_(None)
-        ).order_by(McpGatewayTool.id)
+        stmt = (
+            select(McpGatewayTool)
+            .where(McpGatewayTool.microservice_id.is_(None))
+            .order_by(McpGatewayTool.id)
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
-    
-    async def bind_tool_to_microservice(self, tool_id: int, microservice_id: int) -> bool:
+
+    async def bind_tool_to_microservice(
+        self, tool_id: int, microservice_id: int
+    ) -> bool:
         """绑定工具到微服务"""
         stmt = (
             update(McpGatewayTool)
@@ -233,7 +307,7 @@ class McpGatewayRepository:
         await self.session.execute(stmt)
         await self.session.commit()
         return True
-    
+
     async def unbind_tool(self, tool_id: int) -> bool:
         """解绑工具"""
         stmt = (
@@ -244,7 +318,7 @@ class McpGatewayRepository:
         await self.session.execute(stmt)
         await self.session.commit()
         return True
-    
+
     async def update_tool_enabled(self, tool_id: int, enabled: int) -> bool:
         """更新工具启用状态"""
         stmt = (
@@ -255,29 +329,29 @@ class McpGatewayRepository:
         await self.session.execute(stmt)
         await self.session.commit()
         return True
-    
+
     async def update_tool_call_status(
-        self, 
-        tool_id: int, 
-        call_status: str, 
+        self,
+        tool_id: int,
+        call_status: str,
         call_code: str = None,
-        is_error: bool = False
+        is_error: bool = False,
     ) -> bool:
         """更新工具调用状态"""
         tool = await self.get_tool_by_id(tool_id)
         if not tool:
             return False
-        
+
         values = {
             "call_status": call_status,
             "last_call_time": datetime.now(),
-            "call_count": (tool.call_count or 0) + 1
+            "call_count": (tool.call_count or 0) + 1,
         }
         if call_code:
             values["last_call_code"] = call_code
         if is_error:
             values["error_count"] = (tool.error_count or 0) + 1
-        
+
         stmt = (
             update(McpGatewayTool)
             .where(McpGatewayTool.tool_id == tool_id)
@@ -306,14 +380,10 @@ class McpGatewayRepository:
 
     async def update_gateway(self, gateway_id: int, **kwargs) -> Optional[McpGateway]:
         """更新网关"""
-        stmt = (
-            update(McpGateway)
-            .where(McpGateway.id == gateway_id)
-            .values(**kwargs)
-        )
+        stmt = update(McpGateway).where(McpGateway.id == gateway_id).values(**kwargs)
         await self.session.execute(stmt)
         await self.session.commit()
-        return await self.get_gateway_by_id(kwargs.get('gateway_id', ''))
+        return await self.get_gateway_by_id(kwargs.get("gateway_id", ""))
 
     async def delete_gateway(self, gateway_id: int) -> bool:
         """删除网关"""
@@ -321,6 +391,69 @@ class McpGatewayRepository:
         if not gateway:
             return False
         await self.session.delete(gateway)
+        await self.session.commit()
+        return True
+
+    # ============================================
+    # 网关-微服务绑定方法
+    # ============================================
+
+    async def get_gateway_microservices(
+        self, gateway_id: str
+    ) -> List[McpGatewayMicroservice]:
+        """获取网关绑定的微服务"""
+        stmt = select(McpGatewayMicroservice).where(
+            McpGatewayMicroservice.gateway_id == gateway_id
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def bind_microservice_to_gateway(
+        self, gateway_id: str, microservice_id: int
+    ) -> McpGatewayMicroservice:
+        """绑定微服务到网关"""
+        binding = McpGatewayMicroservice(
+            gateway_id=gateway_id, microservice_id=microservice_id
+        )
+        self.session.add(binding)
+        await self.session.commit()
+        await self.session.refresh(binding)
+        return binding
+
+    async def unbind_microservice_from_gateway(
+        self, gateway_id: str, microservice_id: int
+    ) -> bool:
+        """解绑微服务"""
+        stmt = select(McpGatewayMicroservice).where(
+            and_(
+                McpGatewayMicroservice.gateway_id == gateway_id,
+                McpGatewayMicroservice.microservice_id == microservice_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        binding = result.scalars().first()
+        if binding:
+            await self.session.delete(binding)
+            await self.session.commit()
+        return True
+
+    async def set_gateway_microservices(
+        self, gateway_id: str, microservice_ids: List[int]
+    ) -> bool:
+        """设置网关绑定的微服务（覆盖）"""
+        # 删除原有绑定
+        stmt = select(McpGatewayMicroservice).where(
+            McpGatewayMicroservice.gateway_id == gateway_id
+        )
+        result = await self.session.execute(stmt)
+        for binding in result.scalars().all():
+            await self.session.delete(binding)
+        # 添加新绑定
+        for ms_id in microservice_ids:
+            binding = McpGatewayMicroservice(
+                gateway_id=gateway_id, microservice_id=ms_id
+            )
+            self.session.add(binding)
         await self.session.commit()
         return True
 
@@ -387,11 +520,7 @@ class McpGatewayRepository:
 
     async def update_llm(self, llm_id: int, **kwargs) -> Optional[McpLlm]:
         """更新LLM配置"""
-        stmt = (
-            update(McpLlm)
-            .where(McpLlm.id == llm_id)
-            .values(**kwargs)
-        )
+        stmt = update(McpLlm).where(McpLlm.id == llm_id).values(**kwargs)
         await self.session.execute(stmt)
         await self.session.commit()
         return await self.get_llm_by_id(llm_id)
@@ -442,3 +571,549 @@ class McpGatewayRepository:
         await self.session.delete(key)
         await self.session.commit()
         return True
+
+
+# ============================================
+# RBAC 权限系统数据访问层
+# ============================================
+
+
+class RbacRepository:
+    """RBAC权限系统数据访问层"""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    # ============================================
+    # 用户管理
+    # ============================================
+
+    async def get_user_by_id(self, user_id: int) -> Optional[SysUser]:
+        """根据ID获取用户"""
+        return await self.session.get(SysUser, user_id)
+
+    async def get_user_by_username(self, username: str) -> Optional[SysUser]:
+        """根据用户名获取用户"""
+        stmt = select(SysUser).where(SysUser.username == username)
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def get_all_users(self) -> List[SysUser]:
+        """获取所有用户"""
+        stmt = select(SysUser).order_by(SysUser.id.desc())
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def create_user(self, user: SysUser) -> SysUser:
+        """创建用户"""
+        self.session.add(user)
+        await self.session.commit()
+        await self.session.refresh(user)
+        return user
+
+    async def update_user(self, user_id: int, **kwargs) -> Optional[SysUser]:
+        """更新用户"""
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            return None
+        for key, value in kwargs.items():
+            if hasattr(user, key) and value is not None:
+                setattr(user, key, value)
+        await self.session.commit()
+        await self.session.refresh(user)
+        return user
+
+    async def delete_user(self, user_id: int) -> bool:
+        """删除用户"""
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            return False
+        await self.session.delete(user)
+        await self.session.commit()
+        return True
+
+    async def update_user_login_info(self, user_id: int, login_ip: str) -> bool:
+        """更新用户登录信息"""
+        stmt = (
+            update(SysUser)
+            .where(SysUser.id == user_id)
+            .values(last_login_time=datetime.now(), last_login_ip=login_ip)
+        )
+        await self.session.execute(stmt)
+        await self.session.commit()
+        return True
+
+    # ============================================
+    # 角色管理
+    # ============================================
+
+    async def get_role_by_id(self, role_id: int) -> Optional[SysRole]:
+        """根据ID获取角色"""
+        return await self.session.get(SysRole, role_id)
+
+    async def get_role_by_code(self, role_code: str) -> Optional[SysRole]:
+        """根据角色编码获取角色"""
+        stmt = select(SysRole).where(SysRole.role_code == role_code)
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def get_all_roles(self) -> List[SysRole]:
+        """获取所有角色"""
+        stmt = select(SysRole).order_by(SysRole.id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def create_role(self, role: SysRole) -> SysRole:
+        """创建角色"""
+        self.session.add(role)
+        await self.session.commit()
+        await self.session.refresh(role)
+        return role
+
+    async def update_role(self, role_id: int, **kwargs) -> Optional[SysRole]:
+        """更新角色"""
+        role = await self.get_role_by_id(role_id)
+        if not role:
+            return None
+        for key, value in kwargs.items():
+            if hasattr(role, key) and value is not None:
+                setattr(role, key, value)
+        await self.session.commit()
+        await self.session.refresh(role)
+        return role
+
+    async def delete_role(self, role_id: int) -> bool:
+        """删除角色"""
+        role = await self.get_role_by_id(role_id)
+        if not role:
+            return False
+        await self.session.delete(role)
+        await self.session.commit()
+        return True
+
+    # ============================================
+    # 用户角色关联
+    # ============================================
+
+    async def get_user_roles(self, user_id: int) -> List[SysRole]:
+        """获取用户的所有角色"""
+        stmt = (
+            select(SysRole)
+            .join(SysUserRole, SysRole.id == SysUserRole.role_id)
+            .where(SysUserRole.user_id == user_id)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def assign_role_to_user(self, user_id: int, role_id: int) -> bool:
+        """给用户分配角色"""
+        user_role = SysUserRole(user_id=user_id, role_id=role_id)
+        self.session.add(user_role)
+        await self.session.commit()
+        return True
+
+    async def remove_role_from_user(self, user_id: int, role_id: int) -> bool:
+        """移除用户角色"""
+        stmt = select(SysUserRole).where(
+            and_(SysUserRole.user_id == user_id, SysUserRole.role_id == role_id)
+        )
+        result = await self.session.execute(stmt)
+        user_role = result.scalars().first()
+        if user_role:
+            await self.session.delete(user_role)
+            await self.session.commit()
+        return True
+
+    async def set_user_roles(self, user_id: int, role_ids: List[int]) -> bool:
+        """设置用户角色（覆盖）"""
+        # 删除原有角色
+        stmt = select(SysUserRole).where(SysUserRole.user_id == user_id)
+        result = await self.session.execute(stmt)
+        for ur in result.scalars().all():
+            await self.session.delete(ur)
+        # 添加新角色
+        for role_id in role_ids:
+            user_role = SysUserRole(user_id=user_id, role_id=role_id)
+            self.session.add(user_role)
+        await self.session.commit()
+        return True
+
+    # ============================================
+    # 权限管理
+    # ============================================
+
+    async def get_permission_by_id(self, permission_id: int) -> Optional[SysPermission]:
+        """根据ID获取权限"""
+        return await self.session.get(SysPermission, permission_id)
+
+    async def get_permission_by_code(
+        self, permission_code: str
+    ) -> Optional[SysPermission]:
+        """根据权限编码获取权限"""
+        stmt = select(SysPermission).where(
+            SysPermission.permission_code == permission_code
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def get_all_permissions(self) -> List[SysPermission]:
+        """获取所有权限"""
+        stmt = select(SysPermission).order_by(
+            SysPermission.resource_id, SysPermission.action
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_permissions_by_resource(
+        self, resource_id: int
+    ) -> List[SysPermission]:
+        """获取资源的所有权限"""
+        stmt = select(SysPermission).where(SysPermission.resource_id == resource_id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_role_permissions(self, role_id: int) -> List[SysPermission]:
+        """获取角色的所有权限"""
+        stmt = (
+            select(SysPermission)
+            .join(
+                SysRolePermission, SysPermission.id == SysRolePermission.permission_id
+            )
+            .where(SysRolePermission.role_id == role_id)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_user_permissions(self, user_id: int) -> List[SysPermission]:
+        """获取用户的所有权限（通过角色）"""
+        stmt = (
+            select(SysPermission)
+            .distinct()
+            .join(
+                SysRolePermission, SysPermission.id == SysRolePermission.permission_id
+            )
+            .join(SysUserRole, SysRolePermission.role_id == SysUserRole.role_id)
+            .where(SysUserRole.user_id == user_id)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def assign_permission_to_role(self, role_id: int, permission_id: int) -> bool:
+        """给角色分配权限"""
+        role_perm = SysRolePermission(role_id=role_id, permission_id=permission_id)
+        self.session.add(role_perm)
+        await self.session.commit()
+        return True
+
+    async def remove_permission_from_role(
+        self, role_id: int, permission_id: int
+    ) -> bool:
+        """移除角色权限"""
+        stmt = select(SysRolePermission).where(
+            and_(
+                SysRolePermission.role_id == role_id,
+                SysRolePermission.permission_id == permission_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        role_perm = result.scalars().first()
+        if role_perm:
+            await self.session.delete(role_perm)
+            await self.session.commit()
+        return True
+
+    async def set_role_permissions(
+        self, role_id: int, permission_ids: List[int]
+    ) -> bool:
+        """设置角色权限（覆盖）"""
+        # 删除原有权限
+        stmt = select(SysRolePermission).where(SysRolePermission.role_id == role_id)
+        result = await self.session.execute(stmt)
+        for rp in result.scalars().all():
+            await self.session.delete(rp)
+        # 添加新权限
+        for perm_id in permission_ids:
+            role_perm = SysRolePermission(role_id=role_id, permission_id=perm_id)
+            self.session.add(role_perm)
+        await self.session.commit()
+        return True
+
+    # ============================================
+    # 网关权限
+    # ============================================
+
+    async def get_gateway_permissions_by_role(
+        self, role_id: int
+    ) -> List[SysGatewayPermission]:
+        """获取角色的网关权限"""
+        stmt = select(SysGatewayPermission).where(
+            SysGatewayPermission.role_id == role_id
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_gateway_permission(
+        self, role_id: int, gateway_id: str
+    ) -> Optional[SysGatewayPermission]:
+        """获取角色对特定网关的权限"""
+        stmt = select(SysGatewayPermission).where(
+            and_(
+                SysGatewayPermission.role_id == role_id,
+                SysGatewayPermission.gateway_id == gateway_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def set_gateway_permission(
+        self,
+        role_id: int,
+        gateway_id: str,
+        can_create: bool = False,
+        can_read: bool = False,
+        can_update: bool = False,
+        can_delete: bool = False,
+        can_chat: bool = False,
+    ) -> SysGatewayPermission:
+        """设置角色对网关的权限"""
+        # 查找现有权限
+        existing = await self.get_gateway_permission(role_id, gateway_id)
+        if existing:
+            existing.can_create = 1 if can_create else 0
+            existing.can_read = 1 if can_read else 0
+            existing.can_update = 1 if can_update else 0
+            existing.can_delete = 1 if can_delete else 0
+            existing.can_chat = 1 if can_chat else 0
+            await self.session.commit()
+            await self.session.refresh(existing)
+            return existing
+        else:
+            perm = SysGatewayPermission(
+                role_id=role_id,
+                gateway_id=gateway_id,
+                can_create=1 if can_create else 0,
+                can_read=1 if can_read else 0,
+                can_update=1 if can_update else 0,
+                can_delete=1 if can_delete else 0,
+                can_chat=1 if can_chat else 0,
+            )
+            self.session.add(perm)
+            await self.session.commit()
+            await self.session.refresh(perm)
+            return perm
+
+    async def delete_gateway_permissions_by_role(self, role_id: int) -> bool:
+        """删除角色的所有网关权限"""
+        stmt = select(SysGatewayPermission).where(
+            SysGatewayPermission.role_id == role_id
+        )
+        result = await self.session.execute(stmt)
+        for gp in result.scalars().all():
+            await self.session.delete(gp)
+        await self.session.commit()
+        return True
+
+    async def set_role_gateway_permissions(
+        self, role_id: int, permissions: List[dict]
+    ) -> bool:
+        """批量设置角色的网关权限（覆盖）"""
+        # 删除原有权限
+        await self.delete_gateway_permissions_by_role(role_id)
+
+        # 添加新权限
+        for perm in permissions:
+            gp = SysGatewayPermission(
+                role_id=role_id,
+                gateway_id=perm["gateway_id"],
+                can_create=1 if perm.get("can_create", False) else 0,
+                can_read=1 if perm.get("can_read", False) else 0,
+                can_update=1 if perm.get("can_update", False) else 0,
+                can_delete=1 if perm.get("can_delete", False) else 0,
+                can_chat=1 if perm.get("can_chat", False) else 0,
+            )
+            self.session.add(gp)
+
+        await self.session.commit()
+        return True
+
+    # ============================================
+    # 资源管理
+    # ============================================
+
+    async def get_all_resources(self) -> List[SysResource]:
+        """获取所有资源"""
+        stmt = select(SysResource).order_by(SysResource.sort_order)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_resource_by_id(self, resource_id: int) -> Optional[SysResource]:
+        """根据ID获取资源"""
+        return await self.session.get(SysResource, resource_id)
+
+    # ============================================
+    # 登录日志
+    # ============================================
+
+    async def create_login_log(self, log: SysLoginLog) -> SysLoginLog:
+        """创建登录日志"""
+        self.session.add(log)
+        await self.session.commit()
+        await self.session.refresh(log)
+        return log
+
+    async def get_login_logs(self, limit: int = 100) -> List[SysLoginLog]:
+        """获取登录日志"""
+        stmt = select(SysLoginLog).order_by(SysLoginLog.id.desc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    # ============================================
+    # 业务线管理 (v8.0)
+    # ============================================
+
+    async def get_business_line_by_id(self, bl_id: int) -> Optional[SysBusinessLine]:
+        """根据ID获取业务线"""
+        return await self.session.get(SysBusinessLine, bl_id)
+
+    async def get_business_line_by_code(
+        self, line_code: str
+    ) -> Optional[SysBusinessLine]:
+        """根据编码获取业务线"""
+        stmt = select(SysBusinessLine).where(SysBusinessLine.line_code == line_code)
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def get_all_business_lines(self) -> List[SysBusinessLine]:
+        """获取所有业务线"""
+        stmt = select(SysBusinessLine).order_by(SysBusinessLine.id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def create_business_line(self, bl: SysBusinessLine) -> SysBusinessLine:
+        """创建业务线"""
+        self.session.add(bl)
+        await self.session.commit()
+        await self.session.refresh(bl)
+        return bl
+
+    async def update_business_line(
+        self, bl_id: int, **kwargs
+    ) -> Optional[SysBusinessLine]:
+        """更新业务线"""
+        bl = await self.get_business_line_by_id(bl_id)
+        if not bl:
+            return None
+        for key, value in kwargs.items():
+            if hasattr(bl, key) and value is not None:
+                setattr(bl, key, value)
+        await self.session.commit()
+        await self.session.refresh(bl)
+        return bl
+
+    async def delete_business_line(self, bl_id: int) -> bool:
+        """删除业务线"""
+        bl = await self.get_business_line_by_id(bl_id)
+        if not bl:
+            return False
+        await self.session.delete(bl)
+        await self.session.commit()
+        return True
+
+    # ============================================
+    # 用户-业务线关联
+    # ============================================
+
+    async def get_user_business_lines(self, user_id: int) -> List[SysUserBusinessLine]:
+        """获取用户的所有业务线关联"""
+        stmt = select(SysUserBusinessLine).where(SysUserBusinessLine.user_id == user_id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_user_managed_business_lines(
+        self, user_id: int
+    ) -> List[SysUserBusinessLine]:
+        """获取用户管理的业务线（is_admin=1）"""
+        stmt = select(SysUserBusinessLine).where(
+            and_(
+                SysUserBusinessLine.user_id == user_id,
+                SysUserBusinessLine.is_admin == 1,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_business_line_users(self, bl_id: int) -> List[SysUserBusinessLine]:
+        """获取业务线下的所有用户"""
+        stmt = select(SysUserBusinessLine).where(
+            SysUserBusinessLine.business_line_id == bl_id
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def add_user_to_business_line(
+        self, user_id: int, bl_id: int, is_admin: bool = False
+    ) -> SysUserBusinessLine:
+        """添加用户到业务线"""
+        ubl = SysUserBusinessLine(
+            user_id=user_id, business_line_id=bl_id, is_admin=1 if is_admin else 0
+        )
+        self.session.add(ubl)
+        await self.session.commit()
+        await self.session.refresh(ubl)
+        return ubl
+
+    async def remove_user_from_business_line(self, user_id: int, bl_id: int) -> bool:
+        """从业务线移除用户"""
+        stmt = select(SysUserBusinessLine).where(
+            and_(
+                SysUserBusinessLine.user_id == user_id,
+                SysUserBusinessLine.business_line_id == bl_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        ubl = result.scalars().first()
+        if ubl:
+            await self.session.delete(ubl)
+            await self.session.commit()
+        return True
+
+    async def set_user_business_line_admin(
+        self, user_id: int, bl_id: int, is_admin: bool
+    ) -> bool:
+        """设置用户在业务线的管理员权限"""
+        stmt = select(SysUserBusinessLine).where(
+            and_(
+                SysUserBusinessLine.user_id == user_id,
+                SysUserBusinessLine.business_line_id == bl_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        ubl = result.scalars().first()
+        if ubl:
+            ubl.is_admin = 1 if is_admin else 0
+            await self.session.commit()
+            return True
+        return False
+
+    async def is_business_line_admin(self, user_id: int, bl_id: int) -> bool:
+        """检查用户是否是某业务线管理员"""
+        stmt = select(SysUserBusinessLine).where(
+            and_(
+                SysUserBusinessLine.user_id == user_id,
+                SysUserBusinessLine.business_line_id == bl_id,
+                SysUserBusinessLine.is_admin == 1,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first() is not None
+
+    async def is_user_in_business_line(self, user_id: int, bl_id: int) -> bool:
+        """检查用户是否属于某业务线"""
+        stmt = select(SysUserBusinessLine).where(
+            and_(
+                SysUserBusinessLine.user_id == user_id,
+                SysUserBusinessLine.business_line_id == bl_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first() is not None

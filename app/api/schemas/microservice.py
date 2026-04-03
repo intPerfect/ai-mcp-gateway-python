@@ -12,7 +12,7 @@ class MicroserviceCreate(BaseModel):
     name: str
     http_base_url: str
     description: Optional[str] = None
-    business_line: Optional[str] = None
+    business_line_id: Optional[int] = None
 
 
 class MicroserviceUpdate(BaseModel):
@@ -20,7 +20,7 @@ class MicroserviceUpdate(BaseModel):
     name: Optional[str] = None
     http_base_url: Optional[str] = None
     description: Optional[str] = None
-    business_line: Optional[str] = None
+    business_line_id: Optional[int] = None
     status: Optional[int] = None
 
 
@@ -30,6 +30,7 @@ class MicroserviceResponse(BaseModel):
     name: str
     http_base_url: str
     description: Optional[str] = None
+    business_line_id: Optional[int] = None
     business_line: Optional[str] = None
     health_status: str = "unknown"
     last_check_time: Optional[datetime] = None

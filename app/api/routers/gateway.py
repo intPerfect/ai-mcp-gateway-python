@@ -3,20 +3,30 @@
 Gateway Router - 网关管理路由
 包含：网关配置、网关Key、LLM配置、LLM Key 四个模块
 """
+
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import get_db_session
 from app.infrastructure.database.models import (
-    McpGateway, McpGatewayAuth, McpLlm, McpLlmKey
+    McpGateway,
+    McpGatewayAuth,
+    McpLlm,
+    McpLlmKey,
+    SysBusinessLine,
 )
 from app.infrastructure.database import McpGatewayRepository
 from app.utils.result import Result
 from app.utils.security import generate_api_key, hash_password
+from app.api.routers.auth import (
+    require_auth,
+    require_permission,
+    UserInfo as CurrentUser,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +36,7 @@ router = APIRouter()
 # ============================================
 # Pydantic Schemas
 # ============================================
+
 
 class GatewayCreate(BaseModel):
     gateway_id: str
@@ -79,13 +90,35 @@ class LlmKeyCreate(BaseModel):
 # 网关配置 API
 # ============================================
 
+
 @router.get("/gateways")
-async def get_gateways(db: AsyncSession = Depends(get_db_session)):
-    """获取网关列表"""
+async def get_gateways(
+    current_user: CurrentUser = Depends(require_auth),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """获取网关列表（按业务线过滤）"""
     try:
         repository = McpGatewayRepository(db)
         gateways = await repository.get_all_gateways()
-        
+
+        # 获取用户可访问的业务线
+        user_bl_ids = (
+            [bl.id for bl in current_user.business_lines]
+            if current_user.business_lines
+            else []
+        )
+
+        # 过滤网关（SUPER_ADMIN 可以看到所有网关）
+        if "SUPER_ADMIN" in current_user.roles:
+            filtered_gateways = gateways
+        else:
+            filtered_gateways = [
+                g
+                for g in gateways
+                if g.business_line_id is None
+                or (user_bl_ids and g.business_line_id in user_bl_ids)
+            ]
+
         data = [
             {
                 "id": g.id,
@@ -94,10 +127,11 @@ async def get_gateways(db: AsyncSession = Depends(get_db_session)):
                 "gateway_desc": g.gateway_desc,
                 "version": g.version,
                 "auth": g.auth,
+                "business_line_id": g.business_line_id,
                 "status": g.status,
                 "create_time": str(g.create_time) if g.create_time else None,
             }
-            for g in gateways
+            for g in filtered_gateways
         ]
         return Result.success(data)
     except Exception as e:
@@ -108,32 +142,35 @@ async def get_gateways(db: AsyncSession = Depends(get_db_session)):
 @router.post("/gateways")
 async def create_gateway(
     form: GatewayCreate,
-    db: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser = Depends(require_permission("gateway:create")),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """创建网关"""
     try:
         repository = McpGatewayRepository(db)
-        
+
         # 检查gateway_id是否已存在
         existing = await repository.get_gateway_by_id(form.gateway_id)
         if existing:
             return Result.error("DUPLICATE_ID", "网关ID已存在")
-        
+
         gateway = McpGateway(
             gateway_id=form.gateway_id,
             gateway_name=form.gateway_name,
             gateway_desc=form.gateway_desc,
             version=form.version,
             auth=form.auth,
-            status=1
+            status=1,
         )
-        
+
         result = await repository.create_gateway(gateway)
-        return Result.success({
-            "id": result.id,
-            "gateway_id": result.gateway_id,
-            "gateway_name": result.gateway_name
-        })
+        return Result.success(
+            {
+                "id": result.id,
+                "gateway_id": result.gateway_id,
+                "gateway_name": result.gateway_name,
+            }
+        )
     except Exception as e:
         logger.error(f"创建网关失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))
@@ -143,20 +180,21 @@ async def create_gateway(
 async def update_gateway(
     gateway_id: int,
     form: GatewayUpdate,
-    db: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser = Depends(require_permission("gateway:update")),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """更新网关"""
     try:
         repository = McpGatewayRepository(db)
-        
+
         update_data = {k: v for k, v in form.model_dump().items() if v is not None}
         if not update_data:
             return Result.error("INVALID_PARAM", "无更新数据")
-        
+
         result = await repository.update_gateway(gateway_id, **update_data)
         if not result:
             return Result.error("NOT_FOUND", "网关不存在")
-        
+
         return Result.success({"id": gateway_id})
     except Exception as e:
         logger.error(f"更新网关失败: {str(e)}")
@@ -166,16 +204,17 @@ async def update_gateway(
 @router.delete("/gateways/{gateway_id}")
 async def delete_gateway(
     gateway_id: int,
-    db: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser = Depends(require_permission("gateway:delete")),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """删除网关"""
     try:
         repository = McpGatewayRepository(db)
         success = await repository.delete_gateway(gateway_id)
-        
+
         if not success:
             return Result.error("NOT_FOUND", "网关不存在")
-        
+
         return Result.success({"id": gateway_id})
     except Exception as e:
         logger.error(f"删除网关失败: {str(e)}")
@@ -183,16 +222,99 @@ async def delete_gateway(
 
 
 # ============================================
+# 网关-微服务绑定 API
+# ============================================
+
+
+class GatewayMicroserviceBind(BaseModel):
+    microservice_ids: list[int]
+
+
+@router.get("/gateways/{gateway_id}/microservices")
+async def get_gateway_microservices(
+    gateway_id: str, db: AsyncSession = Depends(get_db_session)
+):
+    """获取网关绑定的微服务列表"""
+    try:
+        repository = McpGatewayRepository(db)
+        bindings = await repository.get_gateway_microservices(gateway_id)
+
+        # 获取微服务详情
+        microservices = []
+        for binding in bindings:
+            ms = await repository.get_microservice_by_id(binding.microservice_id)
+            if ms:
+                # 获取业务线名称
+                bl_name = None
+                if ms.business_line_id:
+                    bl = await db.get(SysBusinessLine, ms.business_line_id)
+                    bl_name = bl.line_name if bl else None
+
+                microservices.append(
+                    {
+                        "id": ms.id,
+                        "name": ms.name,
+                        "http_base_url": ms.http_base_url,
+                        "description": ms.description,
+                        "business_line": bl_name or "未分类",
+                        "health_status": ms.health_status,
+                        "status": ms.status,
+                    }
+                )
+
+        return Result.success(microservices)
+    except Exception as e:
+        logger.error(f"获取网关微服务列表失败: {str(e)}")
+        return Result.error("SYSTEM_ERROR", str(e))
+
+
+@router.put("/gateways/{gateway_id}/microservices")
+async def set_gateway_microservices(
+    gateway_id: str,
+    form: GatewayMicroserviceBind,
+    current_user: CurrentUser = Depends(require_permission("gateway:update")),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """设置网关绑定的微服务（覆盖）"""
+    try:
+        repository = McpGatewayRepository(db)
+
+        # 验证网关存在
+        gateway = await repository.get_gateway_by_id(gateway_id)
+        if not gateway:
+            return Result.error("NOT_FOUND", "网关不存在")
+
+        # 验证微服务存在
+        for ms_id in form.microservice_ids:
+            ms = await repository.get_microservice_by_id(ms_id)
+            if not ms:
+                return Result.error("NOT_FOUND", f"微服务 {ms_id} 不存在")
+
+        await repository.set_gateway_microservices(gateway_id, form.microservice_ids)
+
+        return Result.success(
+            {"gateway_id": gateway_id, "bound_count": len(form.microservice_ids)}
+        )
+    except Exception as e:
+        logger.error(f"设置网关微服务绑定失败: {str(e)}")
+        return Result.error("SYSTEM_ERROR", str(e))
+
+
+# ============================================
 # 网关Key API
 # ============================================
 
+
 @router.get("/gateway-keys")
-async def get_gateway_keys(db: AsyncSession = Depends(get_db_session)):
+async def get_gateway_keys(
+    current_user: CurrentUser = Depends(require_permission("gateway:read")),
+    db: AsyncSession = Depends(get_db_session),
+):
     """获取网关Key列表（脱敏）"""
     try:
         repository = McpGatewayRepository(db)
         keys = await repository.get_all_gateway_keys()
-        
+
         data = [
             {
                 "id": k.id,
@@ -216,19 +338,20 @@ async def get_gateway_keys(db: AsyncSession = Depends(get_db_session)):
 @router.post("/gateway-keys")
 async def create_gateway_key(
     form: GatewayKeyCreate,
-    db: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser = Depends(require_permission("gateway:create")),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """创建网关Key（返回完整Key，仅此一次）"""
     try:
         repository = McpGatewayRepository(db)
-        
+
         # 生成 API Key
         key_id, full_api_key = generate_api_key()
         api_key_hash = hash_password(full_api_key)
         key_preview = f"sk-{key_id[:8]}...{full_api_key[-4:]}"
-        
+
         expire_time = datetime.now() + timedelta(days=form.expire_days)
-        
+
         auth = McpGatewayAuth(
             gateway_id=form.gateway_id,
             key_id=key_id,
@@ -237,21 +360,23 @@ async def create_gateway_key(
             rate_limit=form.rate_limit,
             expire_time=expire_time,
             remark=form.remark,
-            status=1
+            status=1,
         )
-        
+
         await repository.create_gateway_key(auth)
-        
+
         logger.info(f"创建网关Key成功: gateway_id={form.gateway_id}, key_id={key_id}")
-        
-        return Result.success({
-            "id": auth.id,
-            "gateway_id": form.gateway_id,
-            "api_key": full_api_key,  # 完整Key仅在创建时返回
-            "key_preview": key_preview,
-            "expire_time": expire_time.isoformat(),
-            "message": "请立即保存API Key，关闭后将无法再次查看完整Key"
-        })
+
+        return Result.success(
+            {
+                "id": auth.id,
+                "gateway_id": form.gateway_id,
+                "api_key": full_api_key,  # 完整Key仅在创建时返回
+                "key_preview": key_preview,
+                "expire_time": expire_time.isoformat(),
+                "message": "请立即保存API Key，关闭后将无法再次查看完整Key",
+            }
+        )
     except Exception as e:
         logger.error(f"创建网关Key失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))
@@ -260,16 +385,17 @@ async def create_gateway_key(
 @router.delete("/gateway-keys/{key_id}")
 async def delete_gateway_key(
     key_id: int,
-    db: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser = Depends(require_permission("gateway:delete")),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """删除网关Key"""
     try:
         repository = McpGatewayRepository(db)
         success = await repository.delete_gateway_key(key_id)
-        
+
         if not success:
             return Result.error("NOT_FOUND", "Key不存在")
-        
+
         return Result.success({"id": key_id})
     except Exception as e:
         logger.error(f"删除网关Key失败: {str(e)}")
@@ -280,13 +406,17 @@ async def delete_gateway_key(
 # LLM配置 API
 # ============================================
 
+
 @router.get("/llms")
-async def get_llms(db: AsyncSession = Depends(get_db_session)):
+async def get_llms(
+    current_user: CurrentUser = Depends(require_permission("gateway:read")),
+    db: AsyncSession = Depends(get_db_session),
+):
     """获取LLM列表"""
     try:
         repository = McpGatewayRepository(db)
         llms = await repository.get_all_llms()
-        
+
         data = [
             {
                 "id": l.id,
@@ -310,17 +440,18 @@ async def get_llms(db: AsyncSession = Depends(get_db_session)):
 @router.post("/llms")
 async def create_llm(
     form: LlmCreate,
-    db: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser = Depends(require_permission("gateway:create")),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """创建LLM配置"""
     try:
         repository = McpGatewayRepository(db)
-        
+
         # 检查llm_id是否已存在
         existing = await repository.get_llm_by_llm_id(form.llm_id)
         if existing:
             return Result.error("DUPLICATE_ID", "LLM ID已存在")
-        
+
         llm = McpLlm(
             llm_id=form.llm_id,
             llm_name=form.llm_name,
@@ -328,15 +459,13 @@ async def create_llm(
             base_url=form.base_url,
             default_model=form.default_model,
             description=form.description,
-            status=1
+            status=1,
         )
-        
+
         result = await repository.create_llm(llm)
-        return Result.success({
-            "id": result.id,
-            "llm_id": result.llm_id,
-            "llm_name": result.llm_name
-        })
+        return Result.success(
+            {"id": result.id, "llm_id": result.llm_id, "llm_name": result.llm_name}
+        )
     except Exception as e:
         logger.error(f"创建LLM配置失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))
@@ -346,20 +475,21 @@ async def create_llm(
 async def update_llm(
     llm_id: int,
     form: LlmUpdate,
-    db: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser = Depends(require_permission("gateway:update")),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """更新LLM配置"""
     try:
         repository = McpGatewayRepository(db)
-        
+
         update_data = {k: v for k, v in form.model_dump().items() if v is not None}
         if not update_data:
             return Result.error("INVALID_PARAM", "无更新数据")
-        
+
         result = await repository.update_llm(llm_id, **update_data)
         if not result:
             return Result.error("NOT_FOUND", "LLM配置不存在")
-        
+
         return Result.success({"id": llm_id})
     except Exception as e:
         logger.error(f"更新LLM配置失败: {str(e)}")
@@ -369,16 +499,17 @@ async def update_llm(
 @router.delete("/llms/{llm_id}")
 async def delete_llm(
     llm_id: int,
-    db: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser = Depends(require_permission("gateway:delete")),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """删除LLM配置"""
     try:
         repository = McpGatewayRepository(db)
         success = await repository.delete_llm(llm_id)
-        
+
         if not success:
             return Result.error("NOT_FOUND", "LLM配置不存在")
-        
+
         return Result.success({"id": llm_id})
     except Exception as e:
         logger.error(f"删除LLM配置失败: {str(e)}")
@@ -389,13 +520,17 @@ async def delete_llm(
 # LLM Key API
 # ============================================
 
+
 @router.get("/llm-keys")
-async def get_llm_keys(db: AsyncSession = Depends(get_db_session)):
+async def get_llm_keys(
+    current_user: CurrentUser = Depends(require_permission("gateway:read")),
+    db: AsyncSession = Depends(get_db_session),
+):
     """获取LLM Key列表（脱敏）"""
     try:
         repository = McpGatewayRepository(db)
         keys = await repository.get_all_llm_keys()
-        
+
         data = [
             {
                 "id": k.id,
@@ -419,24 +554,25 @@ async def get_llm_keys(db: AsyncSession = Depends(get_db_session)):
 @router.post("/llm-keys")
 async def create_llm_key(
     form: LlmKeyCreate,
-    db: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser = Depends(require_permission("gateway:create")),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """创建LLM Key（返回完整Key，仅此一次）"""
     try:
         repository = McpGatewayRepository(db)
-        
+
         # 检查LLM是否存在
         llm = await repository.get_llm_by_llm_id(form.llm_id)
         if not llm:
             return Result.error("NOT_FOUND", "LLM配置不存在")
-        
+
         # 生成 LLM Key
         key_id, full_key = generate_api_key()
         key_hash = hash_password(full_key)
         key_preview = f"llm-{key_id[:8]}...{full_key[-4:]}"
-        
+
         expire_time = datetime.now() + timedelta(days=form.expire_days)
-        
+
         llm_key = McpLlmKey(
             llm_id=form.llm_id,
             key_id=key_id,
@@ -445,21 +581,23 @@ async def create_llm_key(
             rate_limit=form.rate_limit,
             expire_time=expire_time,
             remark=form.remark,
-            status=1
+            status=1,
         )
-        
+
         await repository.create_llm_key(llm_key)
-        
+
         logger.info(f"创建LLM Key成功: llm_id={form.llm_id}, key_id={key_id}")
-        
-        return Result.success({
-            "id": llm_key.id,
-            "llm_id": form.llm_id,
-            "llm_key": full_key,  # 完整Key仅在创建时返回
-            "key_preview": key_preview,
-            "expire_time": expire_time.isoformat(),
-            "message": "请立即保存API Key，关闭后将无法再次查看完整Key"
-        })
+
+        return Result.success(
+            {
+                "id": llm_key.id,
+                "llm_id": form.llm_id,
+                "llm_key": full_key,  # 完整Key仅在创建时返回
+                "key_preview": key_preview,
+                "expire_time": expire_time.isoformat(),
+                "message": "请立即保存API Key，关闭后将无法再次查看完整Key",
+            }
+        )
     except Exception as e:
         logger.error(f"创建LLM Key失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))
@@ -468,16 +606,17 @@ async def create_llm_key(
 @router.delete("/llm-keys/{key_id}")
 async def delete_llm_key(
     key_id: int,
-    db: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser = Depends(require_permission("gateway:delete")),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """删除LLM Key"""
     try:
         repository = McpGatewayRepository(db)
         success = await repository.delete_llm_key(key_id)
-        
+
         if not success:
             return Result.error("NOT_FOUND", "Key不存在")
-        
+
         return Result.success({"id": key_id})
     except Exception as e:
         logger.error(f"删除LLM Key失败: {str(e)}")
