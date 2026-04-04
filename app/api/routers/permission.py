@@ -4,21 +4,18 @@ Permission Router - 权限管理API路由
 """
 import logging
 from typing import List
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter
 
-from app.infrastructure.database.connection import get_db_session
-from app.infrastructure.database.repository import RbacRepository
-from app.infrastructure.database.repositories import (
-    MicroserviceRepository, GatewayRepository, BusinessLineRepository,
-)
 from app.infrastructure.database.models import SysPermission, SysResource
 from app.domain.rbac import (
     PermissionInfo, ResourceInfo, 
     PermissionTreeNode, ResourcePermissionGroup, DataScopeTreeNode
 )
 from app.utils.result import Result
-from app.api.routers.auth import require_auth, UserInfo as CurrentUser
+from app.api.deps import (
+    CurrentUser,
+    PermissionRepo, MicroserviceRepo, GatewayRepo, BusinessLineRepo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,22 +54,20 @@ def resource_to_info(resource: SysResource, children: List[ResourceInfo] = None)
 
 @router.get("", response_model=Result[List[PermissionInfo]])
 async def list_permissions(
+    current_user: CurrentUser,
+    permission_repo: PermissionRepo,
     resource_id: int = None,
-    current_user: CurrentUser = Depends(require_auth),
-    session: AsyncSession = Depends(get_db_session)
 ):
     """获取权限列表"""
-    repo = RbacRepository(session)
-    
     if resource_id:
-        permissions = await repo.get_permissions_by_resource(resource_id)
+        permissions = await permission_repo.get_permissions_by_resource(resource_id)
     else:
-        permissions = await repo.get_all_permissions()
+        permissions = await permission_repo.get_all_permissions()
     
     result = []
     for perm in permissions:
         resource_name = None
-        resource = await repo.get_resource_by_id(perm.resource_id)
+        resource = await permission_repo.get_resource_by_id(perm.resource_id)
         if resource:
             resource_name = resource.resource_name
         
@@ -83,12 +78,11 @@ async def list_permissions(
 
 @router.get("/resources", response_model=Result[List[ResourceInfo]])
 async def list_resources(
-    current_user: CurrentUser = Depends(require_auth),
-    session: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser,
+    permission_repo: PermissionRepo,
 ):
     """获取资源列表"""
-    repo = RbacRepository(session)
-    resources = await repo.get_all_resources()
+    resources = await permission_repo.get_all_resources()
     
     # 构建树形结构
     def build_tree(parent_id: int = 0) -> List[ResourceInfo]:
@@ -106,12 +100,11 @@ async def list_resources(
 
 @router.get("/my", response_model=Result[List[str]])
 async def get_my_permissions(
-    current_user: CurrentUser = Depends(require_auth),
-    session: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser,
+    permission_repo: PermissionRepo,
 ):
     """获取当前用户权限列表"""
-    repo = RbacRepository(session)
-    permissions = await repo.get_user_permissions(current_user.id)
+    permissions = await permission_repo.get_user_permissions(current_user.id)
     perm_codes = [p.permission_code for p in permissions]
     
     return Result.success(data=perm_codes)
@@ -119,18 +112,16 @@ async def get_my_permissions(
 
 @router.get("/my/menus", response_model=Result[List[ResourceInfo]])
 async def get_my_menus(
-    current_user: CurrentUser = Depends(require_auth),
-    session: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser,
+    permission_repo: PermissionRepo,
 ):
     """获取当前用户菜单"""
-    repo = RbacRepository(session)
-    
     # 获取用户权限
-    permissions = await repo.get_user_permissions(current_user.id)
+    permissions = await permission_repo.get_user_permissions(current_user.id)
     perm_resource_ids = [p.resource_id for p in permissions]
     
     # 获取所有资源
-    resources = await repo.get_all_resources()
+    resources = await permission_repo.get_all_resources()
     
     # 超级管理员返回全部菜单
     if "SUPER_ADMIN" in current_user.roles:
@@ -158,16 +149,14 @@ async def get_my_menus(
 
 @router.get("/tree", response_model=Result[List[ResourcePermissionGroup]])
 async def get_permission_tree(
-    current_user: CurrentUser = Depends(require_auth),
-    session: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser,
+    permission_repo: PermissionRepo,
 ):
     """获取权限树（按资源分组）"""
-    repo = RbacRepository(session)
-    
     # 获取所有资源
-    resources = await repo.get_all_resources()
+    resources = await permission_repo.get_all_resources()
     # 获取所有权限
-    permissions = await repo.get_all_permissions()
+    permissions = await permission_repo.get_all_permissions()
     
     # 按资源分组构建权限树
     result = []
@@ -201,21 +190,19 @@ async def get_permission_tree(
 
 @router.get("/data-scopes/tree", response_model=Result[List[DataScopeTreeNode]])
 async def get_data_scope_tree(
-    current_user: CurrentUser = Depends(require_auth),
-    session: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser,
+    microservice_repo: MicroserviceRepo,
+    gateway_repo: GatewayRepo,
+    business_line_repo: BusinessLineRepo,
 ):
     """获取数据权限树（业务线-微服务-网关）"""
-    ms_repo = MicroserviceRepository(session)
-    gw_repo = GatewayRepository(session)
-    bl_repo = BusinessLineRepository(session)
-    
     # 获取所有微服务
-    microservices = await ms_repo.get_all_microservices()
+    microservices = await microservice_repo.get_all_microservices()
     # 获取所有网关
-    gateways = await gw_repo.get_all_gateways()
+    gateways = await gateway_repo.get_all_gateways()
     
     # 获取业务线映射 {id: name}
-    all_bl = await bl_repo.get_all_business_lines()
+    all_bl = await business_line_repo.get_all_business_lines()
     bl_map = {bl.id: bl.line_name for bl in all_bl}
     
     # 按业务线分组
@@ -277,21 +264,19 @@ async def get_data_scope_tree(
 
 @router.get("/data-scopes/options", response_model=Result[dict])
 async def get_data_scope_options(
-    current_user: CurrentUser = Depends(require_auth),
-    session: AsyncSession = Depends(get_db_session)
+    current_user: CurrentUser,
+    microservice_repo: MicroserviceRepo,
+    gateway_repo: GatewayRepo,
+    business_line_repo: BusinessLineRepo,
 ):
     """获取数据权限选项（业务线、网关列表）"""
-    ms_repo = MicroserviceRepository(session)
-    gw_repo = GatewayRepository(session)
-    bl_repo = BusinessLineRepository(session)
-    
     # 获取所有微服务
-    microservices = await ms_repo.get_all_microservices()
+    microservices = await microservice_repo.get_all_microservices()
     # 获取所有网关
-    gateways = await gw_repo.get_all_gateways()
+    gateways = await gateway_repo.get_all_gateways()
     
     # 获取业务线映射
-    all_bl = await bl_repo.get_all_business_lines()
+    all_bl = await business_line_repo.get_all_business_lines()
     bl_map = {bl.id: bl.line_name for bl in all_bl}
     
     # 获取业务线列表（去重）

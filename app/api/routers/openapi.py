@@ -6,15 +6,12 @@ OpenAPI Router - OpenAPI导入路由
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database import get_db_session
 from app.infrastructure.database.models import (
     McpGatewayTool,
     McpProtocolHttp,
     McpProtocolMapping,
 )
-from app.infrastructure.database.repositories import ToolRepository
 from app.api.schemas.openapi import OpenAPIImportRequest
 from app.domain.protocol.openapi import (
     parse_openapi_spec,
@@ -22,8 +19,8 @@ from app.domain.protocol.openapi import (
     build_preview_data,
 )
 from app.utils.result import Result
-from app.api.routers.auth import require_permission, UserInfo as CurrentUser
-from app.domain.rbac.service import PermissionService
+from app.api.deps import UserInfo, DbSession, ToolRepo, PermissionSvc
+from app.api.routers.auth import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +30,10 @@ router = APIRouter()
 @router.post("/openapi/import")
 async def import_openapi(
     request: OpenAPIImportRequest,
-    current_user: CurrentUser = Depends(require_permission("tool:create")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    tool_repo: ToolRepo,
+    permission_service: PermissionSvc,
+    current_user: UserInfo = Depends(require_permission("tool:create")),
 ):
     """
     导入OpenAPI规范并生成MCP工具配置
@@ -43,8 +42,7 @@ async def import_openapi(
     try:
         # 检查网关级别权限
         if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
+            has_perm = await permission_service.check_gateway_permission(
                 current_user.id, request.gateway_id, "create"
             )
             if not has_perm:
@@ -68,11 +66,10 @@ async def import_openapi(
 
         # 导入到数据库
         imported = []
-        repository = ToolRepository(db)
 
         for tool in tools:
             try:
-                existing = await repository.get_tool_by_name(
+                existing = await tool_repo.get_tool_by_name(
                     request.gateway_id, tool.name
                 )
                 if existing:
@@ -170,7 +167,7 @@ async def import_openapi(
 async def preview_openapi(
     openapi_url: str,
     service_url: str,
-    current_user: CurrentUser = Depends(require_permission("tool:read")),
+    current_user: UserInfo = Depends(require_permission("tool:read")),
 ):
     """预览OpenAPI规范解析结果（需要tool:read权限）"""
     try:

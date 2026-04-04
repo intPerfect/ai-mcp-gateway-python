@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-GatewayPermissionRepository - 网关权限管理（消除重复）
-合并原 McpGatewayRepository 和 RbacRepository 中重复的网关权限方法
+GatewayPermissionRepository - 网关权限管理
 """
 
 from typing import List, Optional

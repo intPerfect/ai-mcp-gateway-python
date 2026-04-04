@@ -20,16 +20,26 @@ router = APIRouter(prefix="/api/auth", tags=["认证"])
 security = HTTPBearer(auto_error=False)
 
 
+def _get_rbac_service(session: AsyncSession = Depends(get_db_session)) -> RbacService:
+    """创建 RbacService 实例（供本模块内部 Depends 使用）"""
+    return RbacService(session)
+
+
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    session: AsyncSession = Depends(get_db_session)
+    rbac_service: RbacService = Depends(_get_rbac_service),
 ) -> Optional[UserInfo]:
-    """获取当前登录用户"""
+    """从请求头中提取并验证 Bearer Token，返回当前登录用户信息。
+
+    未携带 Token 或 Token 无效时返回 None（不抛异常）。
+
+    Returns:
+        已认证用户的 UserInfo，或 None。
+    """
     if not credentials:
         return None
     
     token = credentials.credentials
-    rbac_service = RbacService(session)
     
     token_payload = await rbac_service.validate_token(token)
     if not token_payload:
@@ -42,7 +52,12 @@ async def get_current_user(
 async def require_auth(
     current_user: Optional[UserInfo] = Depends(get_current_user)
 ) -> UserInfo:
-    """要求用户已认证"""
+    """要求用户已认证且未被禁用，否则抛出 HTTP 401/403。
+
+    Raises:
+        HTTPException(401): 未登录或 Token 已过期。
+        HTTPException(403): 用户已被禁用。
+    """
     if not current_user:
         raise HTTPException(status_code=401, detail="未登录或Token已过期")
     if current_user.status != 1:
@@ -51,8 +66,17 @@ async def require_auth(
 
 
 def require_permission(permission_code: str):
-    """权限校验依赖"""
-    async def check_perm(
+    """生成权限校验依赖：要求当前用户拥有指定权限码。
+
+    SUPER_ADMIN 角色自动放行。
+
+    Args:
+        permission_code: 所需权限码，例如 ``"role:read"``。
+
+    Returns:
+        一个可用于 ``Depends(...)`` 的异步函数。
+    """
+    async def check_permission(
         current_user: UserInfo = Depends(require_auth)
     ) -> UserInfo:
         if "SUPER_ADMIN" in current_user.roles:
@@ -63,15 +87,15 @@ def require_permission(permission_code: str):
                 detail=f"缺少权限: {permission_code}"
             )
         return current_user
-    return check_perm
+    return check_permission
 
 
 @router.post("/login", response_model=Result[LoginResponse])
 async def login(
     request: LoginRequest,
+    rbac_service: RbacService = Depends(_get_rbac_service),
     x_forwarded_for: Optional[str] = Header(None, alias="X-Forwarded-For"),
     x_real_ip: Optional[str] = Header(None, alias="X-Real-IP"),
-    session: AsyncSession = Depends(get_db_session)
 ):
     """
     用户登录
@@ -83,8 +107,6 @@ async def login(
     client_ip = x_forwarded_for or x_real_ip or "unknown"
     if "," in client_ip:
         client_ip = client_ip.split(",")[0].strip()
-    
-    rbac_service = RbacService(session)
     
     try:
         result = await rbac_service.login(request, client_ip)

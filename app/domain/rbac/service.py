@@ -10,7 +10,10 @@ from jose import jwt, JWTError
 import bcrypt
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.infrastructure.database.repository import RbacRepository
+from app.infrastructure.database.repositories import (
+    UserRepository, RoleRepository, PermissionRepository,
+    BusinessLineRepository, GatewayPermissionRepository,
+)
 from app.infrastructure.database.models import (
     SysUser, SysRole,
     SysPermission, SysLoginLog
@@ -36,7 +39,12 @@ class RbacService:
     """RBAC权限管理服务"""
     
     def __init__(self, session: AsyncSession):
-        self.repository = RbacRepository(session)
+        """初始化 RBAC 服务，创建所需的 Repository 实例。"""
+        self.user_repo = UserRepository(session)
+        self.role_repo = RoleRepository(session)
+        self.permission_repo = PermissionRepository(session)
+        self.business_line_repo = BusinessLineRepository(session)
+        self.gateway_permission_repo = GatewayPermissionRepository(session)
     
     async def login(self, request: LoginRequest, client_ip: str) -> LoginResponse:
         """
@@ -53,7 +61,7 @@ class RbacService:
             AuthException: 登录失败
         """
         # 查找用户
-        user = await self.repository.get_user_by_username(request.username)
+        user = await self.user_repo.get_user_by_username(request.username)
         
         # 记录登录日志
         log = SysLoginLog(
@@ -65,31 +73,31 @@ class RbacService:
         
         if not user:
             log.fail_reason = "用户不存在"
-            await self.repository.create_login_log(log)
+            await self.permission_repo.create_login_log(log)
             raise AuthException("用户名或密码错误")
         
         if user.status != 1:
             log.fail_reason = "用户已禁用"
-            await self.repository.create_login_log(log)
+            await self.permission_repo.create_login_log(log)
             raise AuthException("用户已被禁用")
         
         # 验证密码
         if not bcrypt.checkpw(request.password.encode('utf-8'), user.password_hash.encode('utf-8')):
             log.fail_reason = "密码错误"
-            await self.repository.create_login_log(log)
+            await self.permission_repo.create_login_log(log)
             raise AuthException("用户名或密码错误")
         
         # 更新登录信息
-        await self.repository.update_user_login_info(user.id, client_ip)
+        await self.user_repo.update_user_login_info(user.id, client_ip)
         
         # 记录成功日志
         log.user_id = user.id
         log.login_status = 1
-        await self.repository.create_login_log(log)
+        await self.permission_repo.create_login_log(log)
         
         # 获取用户角色和权限
-        roles = await self.repository.get_user_roles(user.id)
-        permissions = await self.repository.get_user_permissions(user.id)
+        roles = await self.role_repo.get_user_roles(user.id)
+        permissions = await self.permission_repo.get_user_permissions(user.id)
         
         # 获取数据权限
         data_scope = await self._build_data_scope(user.id)
@@ -137,12 +145,12 @@ class RbacService:
                 return UserInfo(**cached)
 
         # 2. 缓存未命中，查DB
-        user = await self.repository.get_user_by_id(user_id)
+        user = await self.user_repo.get_user_by_id(user_id)
         if not user:
             return None
 
-        roles = await self.repository.get_user_roles(user_id)
-        permissions = await self.repository.get_user_permissions(user_id)
+        roles = await self.role_repo.get_user_roles(user_id)
+        permissions = await self.permission_repo.get_user_permissions(user_id)
         user_info = await self._build_user_info(user, roles, permissions)
 
         # 3. 写入缓存
@@ -255,10 +263,10 @@ class RbacService:
     
     async def _get_user_business_lines(self, user_id: int) -> List[BusinessLineInfo]:
         """获取用户所属业务线列表"""
-        ubls = await self.repository.get_user_business_lines(user_id)
+        ubls = await self.business_line_repo.get_user_business_lines(user_id)
         result = []
         for ubl in ubls:
-            bl = await self.repository.get_business_line_by_id(ubl.business_line_id)
+            bl = await self.business_line_repo.get_business_line_by_id(ubl.business_line_id)
             if bl:
                 result.append(BusinessLineInfo(
                     id=bl.id,
@@ -274,18 +282,18 @@ class RbacService:
     async def _get_user_managed_business_lines(self, user_id: int) -> List[BusinessLineInfo]:
         """获取用户管理的业务线列表（包含用户级别 + 角色级别的管理员权限）"""
         # 用户级别的管理员业务线
-        ubls = await self.repository.get_user_managed_business_lines(user_id)
+        ubls = await self.business_line_repo.get_user_managed_business_lines(user_id)
         managed_bl_ids = set(ubl.business_line_id for ubl in ubls)
 
         # 角色级别的管理员业务线
-        roles = await self.repository.get_user_roles(user_id)
+        roles = await self.role_repo.get_user_roles(user_id)
         role_ids = [r.id for r in roles]
-        role_bl_admin_ids = await self.repository.get_role_bl_admin_ids_for_user(role_ids)
+        role_bl_admin_ids = await self.business_line_repo.get_role_bl_admin_ids_for_user(role_ids)
         managed_bl_ids.update(role_bl_admin_ids)
 
         result = []
         for bl_id in managed_bl_ids:
-            bl = await self.repository.get_business_line_by_id(bl_id)
+            bl = await self.business_line_repo.get_business_line_by_id(bl_id)
             if bl:
                 result.append(BusinessLineInfo(
                     id=bl.id,
@@ -300,22 +308,22 @@ class RbacService:
     
     async def _get_managed_business_line_ids(self, user_id: int) -> List[int]:
         """获取用户管理的业务线ID列表"""
-        ubls = await self.repository.get_user_managed_business_lines(user_id)
+        ubls = await self.business_line_repo.get_user_managed_business_lines(user_id)
         return [ubl.business_line_id for ubl in ubls]
     
     async def is_business_line_admin(self, user_id: int, bl_id: int) -> bool:
         """检查用户是否是某业务线管理员"""
         # 超级管理员拥有所有权限
-        roles = await self.repository.get_user_roles(user_id)
+        roles = await self.role_repo.get_user_roles(user_id)
         for role in roles:
             if role.role_code == "SUPER_ADMIN":
                 return True
-        return await self.repository.is_business_line_admin(user_id, bl_id)
+        return await self.business_line_repo.is_business_line_admin(user_id, bl_id)
     
     async def get_user_managed_business_line_ids(self, user_id: int) -> List[int]:
         """获取用户管理的业务线ID列表（对外接口）"""
         # 超级管理员返回空列表（表示全部权限）
-        roles = await self.repository.get_user_roles(user_id)
+        roles = await self.role_repo.get_user_roles(user_id)
         for role in roles:
             if role.role_code == "SUPER_ADMIN":
                 return []  # 空列表表示全部
@@ -324,7 +332,7 @@ class RbacService:
     async def _build_data_scope(self, user_id: int) -> Optional[DataScope]:
         """构建数据权限范围 - 基于网关权限"""
         # 获取用户所有角色
-        roles = await self.repository.get_user_roles(user_id)
+        roles = await self.role_repo.get_user_roles(user_id)
         
         gateway_ids = set()
         has_all_permission = False
@@ -336,7 +344,7 @@ class RbacService:
                 break
             
             # 获取角色的网关权限
-            gateway_perms = await self.repository.get_gateway_permissions_by_role(role.id)
+            gateway_perms = await self.gateway_permission_repo.get_gateway_permissions_by_role(role.id)
             for gp in gateway_perms:
                 if gp.can_read and gp.gateway_id:
                     gateway_ids.add(gp.gateway_id)
@@ -354,7 +362,9 @@ class PermissionService:
     """权限校验服务"""
     
     def __init__(self, session: AsyncSession):
-        self.repository = RbacRepository(session)
+        self.permission_repo = PermissionRepository(session)
+        self.role_repo = RoleRepository(session)
+        self.gateway_permission_repo = GatewayPermissionRepository(session)
 
     async def _get_perm_cache(self) -> Optional[PermissionCache]:
         try:
@@ -383,7 +393,7 @@ class PermissionService:
             bool: 是否有权限
         """
         # 获取用户权限
-        permissions = await self.repository.get_user_permissions(user_id)
+        permissions = await self.permission_repo.get_user_permissions(user_id)
         permission_codes = [p.permission_code for p in permissions]
         
         # 检查功能权限
@@ -391,7 +401,7 @@ class PermissionService:
             return False
         
         # 获取用户角色检查数据权限
-        roles = await self.repository.get_user_roles(user_id)
+        roles = await self.role_repo.get_user_roles(user_id)
         role_codes = [r.role_code for r in roles]
         
         # 超级管理员拥有全部权限
@@ -424,10 +434,10 @@ class PermissionService:
         if not gateway_id:
             return True
         
-        roles = await self.repository.get_user_roles(user_id)
+        roles = await self.role_repo.get_user_roles(user_id)
         
         for role in roles:
-            gateway_perms = await self.repository.get_gateway_permissions_by_role(role.id)
+            gateway_perms = await self.gateway_permission_repo.get_gateway_permissions_by_role(role.id)
             
             for gp in gateway_perms:
                 if gp.gateway_id == gateway_id:
@@ -440,7 +450,7 @@ class PermissionService:
     
     async def get_accessible_gateways(self, user_id: int) -> List[str]:
         """获取用户可访问的网关ID列表（Cache Aside）"""
-        roles = await self.repository.get_user_roles(user_id)
+        roles = await self.role_repo.get_user_roles(user_id)
         
         # 超级管理员可访问全部
         for role in roles:
@@ -457,7 +467,7 @@ class PermissionService:
         # 2. 缓存未命中，查DB
         gateway_ids = set()
         for role in roles:
-            gateway_perms = await self.repository.get_gateway_permissions_by_role(role.id)
+            gateway_perms = await self.gateway_permission_repo.get_gateway_permissions_by_role(role.id)
             for gp in gateway_perms:
                 if gp.can_read and gp.gateway_id:
                     gateway_ids.add(gp.gateway_id)
@@ -477,7 +487,7 @@ class PermissionService:
         permission_type: str = "read"
     ) -> bool:
         """检查用户对特定网关的权限（Cache Aside）"""
-        roles = await self.repository.get_user_roles(user_id)
+        roles = await self.role_repo.get_user_roles(user_id)
         
         # 超级管理员有全部权限
         for role in roles:
@@ -498,7 +508,7 @@ class PermissionService:
                         if gp.get(f"can_{permission_type}", False):
                             return True
             else:
-                gateway_perms = await self.repository.get_gateway_permissions_by_role(role.id)
+                gateway_perms = await self.gateway_permission_repo.get_gateway_permissions_by_role(role.id)
                 # 写入缓存
                 if cache and gateway_perms:
                     perms_list = [

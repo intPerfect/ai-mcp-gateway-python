@@ -38,8 +38,7 @@ class MicroserviceResponse(BaseModel):
     create_time: Optional[datetime] = None
     update_time: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ToolBindRequest(BaseModel):
@@ -67,8 +66,7 @@ class ToolResponse(BaseModel):
     call_count: int = 0
     error_count: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ParameterMappingItem(BaseModel):

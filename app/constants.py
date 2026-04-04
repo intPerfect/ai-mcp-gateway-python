@@ -21,37 +21,6 @@ class ChatState:
     ERROR = "error"
 
 
-class WSEventType:
-    """WebSocket 事件类型常量"""
-    # 连接相关
-    WELCOME = "welcome"
-    PONG = "pong"
-    
-    # 对话流程
-    STREAM_START = "stream_start"
-    STREAM_END = "stream_end"
-    
-    # 内容输出
-    TEXT_DELTA = "text_delta"
-    TEXT_STOP = "text_stop"
-    THINKING_DELTA = "thinking_delta"
-    THINKING_STOP = "thinking_stop"
-    
-    # 工具调用
-    TOOL_USE_START = "tool_use_start"
-    TOOL_USE_STOP = "tool_use_stop"
-    TOOL_CALL = "tool_call"
-    TOOL_RESULT = "tool_result"
-    
-    # 状态与控制
-    STATUS = "status"
-    RESPONSE = "response"
-    ERROR = "error"
-    
-    # 会话控制
-    CLEARED = "cleared"
-
-
 class MessageType:
     """消息类型常量"""
     CHAT = "chat"

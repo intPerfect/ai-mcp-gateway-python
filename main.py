@@ -28,8 +28,8 @@ from app.api.routers import (
     role_router,
     permission_router,
     business_line_router,
+    admin_router,
 )
-from app.api.routers.admin import router as admin_router
 from app.api.routers.chat import websocket_handler
 from app.utils.exceptions import AppException
 from app.utils.result import Result

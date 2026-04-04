@@ -8,15 +8,12 @@ import logging
 from typing import Optional, List
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 
-from app.infrastructure.database import get_db_session
 from app.infrastructure.database.models import McpUsageLog, McpGatewayAuth
 from app.domain.usage.service import get_usage_service
 from app.utils.result import Result
-from app.api.routers.auth import require_auth, UserInfo as CurrentUser
-from app.domain.rbac.service import PermissionService
+from app.api.deps import CurrentUser, DbSession, PermissionSvc
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +57,15 @@ class UsageLogItem(BaseModel):
 
 @router.get("/usage/stats")
 async def get_usage_stats(
-    current_user: CurrentUser = Depends(require_auth),
-    db: AsyncSession = Depends(get_db_session),
+    current_user: CurrentUser,
+    db: DbSession,
+    permission_service: PermissionSvc,
 ):
     """获取使用统计"""
     try:
         usage_service = await get_usage_service(session=db)
 
         is_super_admin = "SUPER_ADMIN" in current_user.roles
-        permission_service = PermissionService(db)
         accessible_gateway_ids = await permission_service.get_accessible_gateways(
             current_user.id
         )
@@ -95,16 +92,16 @@ async def get_usage_stats(
 
 @router.get("/usage/keys")
 async def get_key_usage_list(
+    current_user: CurrentUser,
+    db: DbSession,
+    permission_service: PermissionSvc,
     gateway_id: Optional[str] = Query(None, description="按网关ID筛选"),
-    current_user: CurrentUser = Depends(require_auth),
-    db: AsyncSession = Depends(get_db_session),
 ):
     """获取各 Key 使用情况列表"""
     try:
         usage_service = await get_usage_service(session=db)
 
         is_super_admin = "SUPER_ADMIN" in current_user.roles
-        permission_service = PermissionService(db)
 
         accessible_gateway_ids = await permission_service.get_accessible_gateways(
             current_user.id
@@ -149,18 +146,18 @@ async def get_key_usage_list(
 
 @router.get("/usage/logs")
 async def get_usage_logs(
+    current_user: CurrentUser,
+    db: DbSession,
+    permission_service: PermissionSvc,
     gateway_id: Optional[str] = Query(None, description="按网关ID筛选"),
     key_id: Optional[str] = Query(None, description="按Key ID筛选"),
     call_type: Optional[str] = Query(None, description="按调用类型筛选: llm/tool"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
-    current_user: CurrentUser = Depends(require_auth),
-    db: AsyncSession = Depends(get_db_session),
 ):
     """获取使用日志明细（分页）"""
     try:
         is_super_admin = "SUPER_ADMIN" in current_user.roles
-        permission_service = PermissionService(db)
         accessible_gateway_ids = await permission_service.get_accessible_gateways(
             current_user.id
         )
@@ -225,9 +222,9 @@ async def get_usage_logs(
 
 @router.post("/usage/reset")
 async def reset_usage(
+    current_user: CurrentUser,
     gateway_id: str = Query(..., description="网关ID"),
     key_id: str = Query(..., description="Key ID"),
-    current_user: CurrentUser = Depends(require_auth),
 ):
     """重置使用计数（管理员用）"""
     if "SUPER_ADMIN" not in current_user.roles:

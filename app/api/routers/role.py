@@ -6,19 +6,17 @@ Role Router - 角色管理API路由
 import logging
 from typing import List
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database.connection import get_db_session
-from app.infrastructure.database.repository import RbacRepository
-from app.infrastructure.database.repositories import GatewayRepository
 from app.infrastructure.database.models import SysRole
 from app.infrastructure.cache.redis_client import get_redis, PermissionCache
 from app.domain.rbac import RoleInfo, RoleCreate, RoleUpdate, DataPermissionSet
 from app.utils.result import Result
-from app.api.routers.auth import (
-    require_permission,
-    UserInfo as CurrentUser,
+from app.api.deps import (
+    UserInfo, is_super_admin, get_user_managed_business_line_ids,
+    RoleRepo, PermissionRepo, BusinessLineRepo,
+    GatewayPermissionRepo, GatewayRepo,
 )
+from app.api.routers.auth import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -49,40 +47,27 @@ def role_to_info(
     )
 
 
-def is_super_admin(current_user: CurrentUser) -> bool:
-    """检查是否是超级管理员"""
-    return "SUPER_ADMIN" in current_user.roles
-
-
-async def get_user_managed_business_line_ids(
-    repo: RbacRepository, user_id: int
-) -> List[int]:
-    """获取用户管理的业务线ID列表"""
-    managed = await repo.get_user_managed_business_lines(user_id)
-    return [ubl.business_line_id for ubl in managed]
-
-
 @router.get("", response_model=Result[List[RoleInfo]])
 async def list_roles(
-    current_user: CurrentUser = Depends(require_permission("role:read")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    permission_repo: PermissionRepo,
+    current_user: UserInfo = Depends(require_permission("role:read")),
 ):
     """获取角色列表
 
     - 超级管理员：可以看到所有角色
     - 业务线管理员：只能看到全局角色和自己业务线的角色
     """
-    repo = RbacRepository(session)
-    roles = await repo.get_all_roles()
+    roles = await role_repo.get_all_roles()
 
     # 获取业务线映射
-    business_lines = await repo.get_all_business_lines()
+    business_lines = await business_line_repo.get_all_business_lines()
     bl_map = {bl.id: bl.line_name for bl in business_lines}
 
     # 权限过滤
     if not is_super_admin(current_user):
-        # 业务线管理员只能看到全局角色和自己业务线的角色
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         roles = [
             r
             for r in roles
@@ -91,7 +76,7 @@ async def list_roles(
 
     result = []
     for role in roles:
-        perms = await repo.get_role_permissions(role.id)
+        perms = await permission_repo.get_role_permissions(role.id)
         perm_codes = [p.permission_code for p in perms]
         perm_ids = [p.id for p in perms]
         bl_name = bl_map.get(role.business_line_id) if role.business_line_id else None
@@ -102,34 +87,30 @@ async def list_roles(
 
 @router.get("/assignable", response_model=Result[List[RoleInfo]])
 async def get_assignable_roles(
-    current_user: CurrentUser = Depends(require_permission("user:create")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    current_user: UserInfo = Depends(require_permission("user:create")),
 ):
     """获取当前用户可分配的角色列表
 
     - 超级管理员：可以分配所有非超级管理员角色
     - 业务线管理员：只能分配全局角色和自己业务线的角色（排除超级管理员）
     """
-    repo = RbacRepository(session)
-
     # 获取业务线映射
-    business_lines = await repo.get_all_business_lines()
+    business_lines = await business_line_repo.get_all_business_lines()
     bl_map = {bl.id: bl.line_name for bl in business_lines}
 
     # 先排除超级管理员角色
-    all_roles = await repo.get_all_roles()
+    all_roles = await role_repo.get_all_roles()
     non_super_roles = [r for r in all_roles if r.role_code != "SUPER_ADMIN"]
 
     if is_super_admin(current_user):
-        # 超级管理员：获取所有非超级管理员的角色
         roles = non_super_roles
     else:
-        # 业务线管理员：只能分配全局角色和自己业务线的角色
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         if not managed_bl_ids:
-            return Result.success(data=[])  # 没有管理任何业务线，返回空列表
+            return Result.success(data=[])
 
-        # 只包含：全局角色(business_line_id=None) 或 在管理业务线列表中的角色
         roles = [
             r
             for r in non_super_roles
@@ -147,33 +128,34 @@ async def get_assignable_roles(
 @router.get("/{role_id}", response_model=Result[RoleInfo])
 async def get_role(
     role_id: int,
-    current_user: CurrentUser = Depends(require_permission("role:read")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    permission_repo: PermissionRepo,
+    current_user: UserInfo = Depends(require_permission("role:read")),
 ):
     """获取角色详情"""
-    repo = RbacRepository(session)
-    role = await repo.get_role_by_id(role_id)
+    role = await role_repo.get_role_by_id(role_id)
 
     if not role:
         return Result.not_found("角色不存在")
 
     # 权限校验：业务线管理员只能查看自己业务线的角色
     if not is_super_admin(current_user):
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         if (
             role.business_line_id is not None
             and role.business_line_id not in managed_bl_ids
         ):
             return Result.fail(code="403", message="无权查看该角色")
 
-    perms = await repo.get_role_permissions(role.id)
+    perms = await permission_repo.get_role_permissions(role.id)
     perm_codes = [p.permission_code for p in perms]
     perm_ids = [p.id for p in perms]
 
     # 获取业务线名称
     bl_name = None
     if role.business_line_id:
-        bl = await repo.get_business_line_by_id(role.business_line_id)
+        bl = await business_line_repo.get_business_line_by_id(role.business_line_id)
         bl_name = bl.line_name if bl else None
 
     return Result.success(data=role_to_info(role, perm_codes, perm_ids, None, bl_name))
@@ -182,18 +164,18 @@ async def get_role(
 @router.post("", response_model=Result[RoleInfo])
 async def create_role(
     request: RoleCreate,
-    current_user: CurrentUser = Depends(require_permission("role:create")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    permission_repo: PermissionRepo,
+    current_user: UserInfo = Depends(require_permission("role:create")),
 ):
     """创建角色
 
     - 超级管理员：可以创建全局角色（business_line_id=None）或任意业务线角色
     - 业务线管理员：只能创建自己业务线的角色，business_line_id会被强制设置为用户管理的业务线
     """
-    repo = RbacRepository(session)
-
     # 检查角色编码是否已存在
-    existing = await repo.get_role_by_code(request.role_code)
+    existing = await role_repo.get_role_by_code(request.role_code)
     if existing:
         return Result.fail(code="2001", message="角色编码已存在")
 
@@ -201,8 +183,7 @@ async def create_role(
     business_line_id = request.business_line_id
 
     if not is_super_admin(current_user):
-        # 业务线管理员只能在自己业务线下创建角色
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
 
         if not managed_bl_ids:
             return Result.fail(
@@ -210,13 +191,11 @@ async def create_role(
             )
 
         if business_line_id is not None:
-            # 如果指定了业务线，检查是否在自己管理的范围内
             if business_line_id not in managed_bl_ids:
                 return Result.fail(
                     code="403", message="您只能在自己管理的业务线下创建角色"
                 )
         else:
-            # 如果没有指定业务线，默认使用第一个管理的业务线
             business_line_id = managed_bl_ids[0]
 
     role = SysRole(
@@ -228,16 +207,16 @@ async def create_role(
         status=1,
     )
 
-    role = await repo.create_role(role)
+    role = await role_repo.create_role(role)
 
     # 分配权限
     if request.permission_ids:
-        await repo.set_role_permissions(role.id, request.permission_ids)
+        await permission_repo.set_role_permissions(role.id, request.permission_ids)
 
     # 获取业务线名称
     bl_name = None
     if role.business_line_id:
-        bl = await repo.get_business_line_by_id(role.business_line_id)
+        bl = await business_line_repo.get_business_line_by_id(role.business_line_id)
         bl_name = bl.line_name if bl else None
 
     logger.info(
@@ -253,12 +232,13 @@ async def create_role(
 async def update_role(
     role_id: int,
     request: RoleUpdate,
-    current_user: CurrentUser = Depends(require_permission("role:update")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    permission_repo: PermissionRepo,
+    current_user: UserInfo = Depends(require_permission("role:update")),
 ):
     """更新角色"""
-    repo = RbacRepository(session)
-    role = await repo.get_role_by_id(role_id)
+    role = await role_repo.get_role_by_id(role_id)
 
     if not role:
         return Result.not_found("角色不存在")
@@ -268,7 +248,7 @@ async def update_role(
 
     # 权限校验：业务线管理员只能修改自己业务线的角色
     if not is_super_admin(current_user):
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         if (
             role.business_line_id is not None
             and role.business_line_id not in managed_bl_ids
@@ -284,16 +264,16 @@ async def update_role(
         update_data["status"] = request.status
 
     if update_data:
-        role = await repo.update_role(role_id, **update_data)
+        role = await role_repo.update_role(role_id, **update_data)
 
     # 更新权限
     if request.permission_ids is not None:
-        await repo.set_role_permissions(role_id, request.permission_ids)
+        await permission_repo.set_role_permissions(role_id, request.permission_ids)
 
     # 获取业务线名称
     bl_name = None
     if role.business_line_id:
-        bl = await repo.get_business_line_by_id(role.business_line_id)
+        bl = await business_line_repo.get_business_line_by_id(role.business_line_id)
         bl_name = bl.line_name if bl else None
 
     logger.info(f"Role {role.role_code} updated by {current_user.username}")
@@ -306,12 +286,12 @@ async def update_role(
 @router.delete("/{role_id}", response_model=Result)
 async def delete_role(
     role_id: int,
-    current_user: CurrentUser = Depends(require_permission("role:delete")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    current_user: UserInfo = Depends(require_permission("role:delete")),
 ):
     """删除角色"""
-    repo = RbacRepository(session)
-    role = await repo.get_role_by_id(role_id)
+    role = await role_repo.get_role_by_id(role_id)
 
     if not role:
         return Result.not_found("角色不存在")
@@ -321,14 +301,14 @@ async def delete_role(
 
     # 权限校验：业务线管理员只能删除自己业务线的角色
     if not is_super_admin(current_user):
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         if (
             role.business_line_id is not None
             and role.business_line_id not in managed_bl_ids
         ):
             return Result.fail(code="403", message="无权删除该角色")
 
-    await repo.delete_role(role_id)
+    await role_repo.delete_role(role_id)
     logger.info(f"Role {role.role_code} deleted by {current_user.username}")
 
     return Result.success(message="删除成功")
@@ -337,26 +317,27 @@ async def delete_role(
 @router.get("/{role_id}/permissions", response_model=Result[List[str]])
 async def get_role_permissions(
     role_id: int,
-    current_user: CurrentUser = Depends(require_permission("role:read")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    permission_repo: PermissionRepo,
+    current_user: UserInfo = Depends(require_permission("role:read")),
 ):
     """获取角色权限列表"""
-    repo = RbacRepository(session)
-    role = await repo.get_role_by_id(role_id)
+    role = await role_repo.get_role_by_id(role_id)
 
     if not role:
         return Result.not_found("角色不存在")
 
     # 权限校验
     if not is_super_admin(current_user):
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         if (
             role.business_line_id is not None
             and role.business_line_id not in managed_bl_ids
         ):
             return Result.fail(code="403", message="无权查看该角色")
 
-    perms = await repo.get_role_permissions(role.id)
+    perms = await permission_repo.get_role_permissions(role.id)
     perm_codes = [p.permission_code for p in perms]
 
     return Result.success(data=perm_codes)
@@ -366,26 +347,27 @@ async def get_role_permissions(
 async def set_role_permissions(
     role_id: int,
     permission_ids: List[int],
-    current_user: CurrentUser = Depends(require_permission("role:update")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    permission_repo: PermissionRepo,
+    current_user: UserInfo = Depends(require_permission("role:update")),
 ):
     """设置角色权限"""
-    repo = RbacRepository(session)
-    role = await repo.get_role_by_id(role_id)
+    role = await role_repo.get_role_by_id(role_id)
 
     if not role:
         return Result.not_found("角色不存在")
 
     # 权限校验
     if not is_super_admin(current_user):
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         if (
             role.business_line_id is not None
             and role.business_line_id not in managed_bl_ids
         ):
             return Result.fail(code="403", message="无权修改该角色")
 
-    await repo.set_role_permissions(role_id, permission_ids)
+    await permission_repo.set_role_permissions(role_id, permission_ids)
     logger.info(f"Permissions set for role {role.role_code} by {current_user.username}")
 
     # 失效缓存
@@ -402,24 +384,25 @@ async def set_role_permissions(
 @router.get("/{role_id}/gateway-permissions", response_model=Result[List])
 async def get_role_gateway_permissions(
     role_id: int,
-    current_user: CurrentUser = Depends(require_permission("role:read")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    gateway_permission_repo: GatewayPermissionRepo,
+    gateway_repo: GatewayRepo,
+    current_user: UserInfo = Depends(require_permission("role:read")),
 ):
     """获取角色的网关权限
 
     - 超级管理员：可以看到所有网关的权限
     - 业务线管理员：只能看到自己业务线范围内的网关权限
     """
-    repo = RbacRepository(session)
-    gw_repo = GatewayRepository(session)
-    role = await repo.get_role_by_id(role_id)
+    role = await role_repo.get_role_by_id(role_id)
 
     if not role:
         return Result.not_found("角色不存在")
 
     # 权限校验
     if not is_super_admin(current_user):
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         if (
             role.business_line_id is not None
             and role.business_line_id not in managed_bl_ids
@@ -427,13 +410,13 @@ async def get_role_gateway_permissions(
             return Result.fail(code="403", message="无权查看该角色")
 
     # 获取所有网关和业务线
-    gateways = await gw_repo.get_all_gateways()
-    business_lines = await repo.get_all_business_lines()
+    gateways = await gateway_repo.get_all_gateways()
+    business_lines = await business_line_repo.get_all_business_lines()
     bl_map = {bl.id: bl.line_name for bl in business_lines}
 
     # 业务线管理员只能看到自己业务线范围内的网关
     if not is_super_admin(current_user):
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         gateways = [
             gw
             for gw in gateways
@@ -441,7 +424,7 @@ async def get_role_gateway_permissions(
         ]
 
     # 获取角色的网关权限
-    permissions = await repo.get_gateway_permissions_by_role(role_id)
+    permissions = await gateway_permission_repo.get_gateway_permissions_by_role(role_id)
 
     # 构建权限映射
     perm_map = {p.gateway_id: p for p in permissions}
@@ -471,17 +454,18 @@ async def get_role_gateway_permissions(
 async def set_role_gateway_permissions(
     role_id: int,
     request: List[dict],
-    current_user: CurrentUser = Depends(require_permission("role:update")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    gateway_permission_repo: GatewayPermissionRepo,
+    gateway_repo: GatewayRepo,
+    current_user: UserInfo = Depends(require_permission("role:update")),
 ):
     """设置角色的网关权限
     
     - 超级管理员：可以设置所有网关的权限
     - 业务线管理员：只能设置自己业务线范围内的网关权限
     """
-    repo = RbacRepository(session)
-    gw_repo = GatewayRepository(session)
-    role = await repo.get_role_by_id(role_id)
+    role = await role_repo.get_role_by_id(role_id)
 
     if not role:
         return Result.not_found("角色不存在")
@@ -489,7 +473,7 @@ async def set_role_gateway_permissions(
     # 权限校验
     managed_bl_ids = None
     if not is_super_admin(current_user):
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         if (
             role.business_line_id is not None
             and role.business_line_id not in managed_bl_ids
@@ -497,7 +481,7 @@ async def set_role_gateway_permissions(
             return Result.fail(code="403", message="无权修改该角色")
 
     # 获取所有网关
-    gateways = await gw_repo.get_all_gateways()
+    gateways = await gateway_repo.get_all_gateways()
     gateway_bl_map = {gw.gateway_id: gw.business_line_id for gw in gateways}
 
     # 转换请求格式，业务线管理员只能设置自己业务线范围内的网关
@@ -523,18 +507,16 @@ async def set_role_gateway_permissions(
         )
 
     if managed_bl_ids is not None:
-        # 业务线管理员：仅更新自己业务线范围内的网关权限，保留其他业务线的权限不变
         scoped_gateway_ids = [
             gw.gateway_id
             for gw in gateways
             if gw.business_line_id is None or gw.business_line_id in managed_bl_ids
         ]
-        await repo.set_role_gateway_permissions_scoped(
+        await gateway_permission_repo.set_role_gateway_permissions_scoped(
             role_id, permissions, scoped_gateway_ids
         )
     else:
-        # 超级管理员：全量替换
-        await repo.set_role_gateway_permissions(role_id, permissions)
+        await gateway_permission_repo.set_role_gateway_permissions(role_id, permissions)
 
     logger.info(
         f"Gateway permissions set for role {role.role_code} by {current_user.username}"
@@ -554,16 +536,16 @@ async def set_role_gateway_permissions(
 @router.get("/{role_id}/bl-admin", response_model=Result[List[int]])
 async def get_role_bl_admin(
     role_id: int,
-    current_user: CurrentUser = Depends(require_permission("role:read")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    current_user: UserInfo = Depends(require_permission("role:read")),
 ):
     """获取角色的业务线管理员权限"""
-    repo = RbacRepository(session)
-    role = await repo.get_role_by_id(role_id)
+    role = await role_repo.get_role_by_id(role_id)
     if not role:
         return Result.not_found("角色不存在")
 
-    bl_admin_ids = await repo.get_role_bl_admin_ids(role_id)
+    bl_admin_ids = await business_line_repo.get_role_bl_admin_ids(role_id)
     return Result.success(data=bl_admin_ids)
 
 
@@ -571,24 +553,24 @@ async def get_role_bl_admin(
 async def set_role_bl_admin(
     role_id: int,
     bl_ids: List[int],
-    current_user: CurrentUser = Depends(require_permission("role:update")),
-    session: AsyncSession = Depends(get_db_session),
+    role_repo: RoleRepo,
+    business_line_repo: BusinessLineRepo,
+    current_user: UserInfo = Depends(require_permission("role:update")),
 ):
     """设置角色的业务线管理员权限"""
-    repo = RbacRepository(session)
-    role = await repo.get_role_by_id(role_id)
+    role = await role_repo.get_role_by_id(role_id)
     if not role:
         return Result.not_found("角色不存在")
 
     # 权限校验
     if not is_super_admin(current_user):
-        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        managed_bl_ids = await get_user_managed_business_line_ids(business_line_repo, current_user.id)
         if role.business_line_id is not None and role.business_line_id not in managed_bl_ids:
             return Result.fail(code="403", message="无权修改该角色")
         # 业务线管理员只能设置自己管理的业务线
         bl_ids = [bl_id for bl_id in bl_ids if bl_id in managed_bl_ids]
 
-    await repo.set_role_bl_admin_ids(role_id, bl_ids)
+    await business_line_repo.set_role_bl_admin_ids(role_id, bl_ids)
     logger.info(f"BL admin set for role {role.role_code} by {current_user.username}: {bl_ids}")
 
     # 失效缓存

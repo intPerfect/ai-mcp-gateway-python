@@ -127,7 +127,7 @@ async def test_llm_config(llm_config_id: str = Body(..., media_type="text/plain"
         if not llm_config:
             raise HTTPException(status_code=404, detail="LLM配置不存在")
 
-        from app.services.llm_service import LLMService
+        from app.services.llm.base import LLMService
 
         llm_service = LLMService(
             api_type=llm_config.api_type,

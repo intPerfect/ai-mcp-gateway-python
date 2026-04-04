@@ -17,6 +17,7 @@ from app.api.routers.user import router as user_router
 from app.api.routers.role import router as role_router
 from app.api.routers.permission import router as permission_router
 from app.api.routers.business_line import router as business_line_router
+from app.api.routers.admin import router as admin_router
 
 __all__ = [
     "mcp_router",
@@ -33,4 +34,5 @@ __all__ = [
     "role_router",
     "permission_router",
     "business_line_router",
+    "admin_router",
 ]

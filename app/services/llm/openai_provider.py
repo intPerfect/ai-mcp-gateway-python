@@ -221,6 +221,12 @@ async def chat_stream_openai(
                     }
                 )
                 yield {"type": "tool_use_start", "id": tc["id"], "name": tc["name"]}
+                yield {
+                    "type": "tool_input_ready",
+                    "id": tc["id"],
+                    "name": tc["name"],
+                    "input": tc["input"],
+                }
                 yield {"type": "tool_use_stop"}
 
         if accumulated_text:

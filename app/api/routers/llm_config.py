@@ -7,19 +7,11 @@ LLM Config Router - LLM配置管理路由
 import logging
 import secrets
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database import get_db_session
 from app.infrastructure.database.models import McpLlmConfig
-from app.infrastructure.database.repositories import (
-    GatewayRepository,
-    LlmConfigRepository,
-)
 from app.utils.result import Result
-from app.api.routers.auth import (
-    require_permission,
-    UserInfo as CurrentUser,
-)
+from app.api.deps import UserInfo, DbSession, GatewayRepo, LlmConfigRepo
+from app.api.routers.auth import require_permission
 from app.api.dependencies import require_gateway_permission
 from app.api.schemas.llm_config import (
     LlmConfigCreate,
@@ -44,13 +36,12 @@ def _generate_config_id() -> str:
 
 @router.get("/llm-configs")
 async def get_llm_configs(
-    current_user: CurrentUser = Depends(require_permission("gateway:read")),
-    db: AsyncSession = Depends(get_db_session),
+    llm_config_repo: LlmConfigRepo,
+    current_user: UserInfo = Depends(require_permission("gateway:read")),
 ):
     """获取LLM配置列表"""
     try:
-        repository = LlmConfigRepository(db)
-        configs = await repository.get_all_llm_configs()
+        configs = await llm_config_repo.get_all_llm_configs()
 
         data = [
             {
@@ -75,13 +66,11 @@ async def get_llm_configs(
 @router.post("/llm-configs")
 async def create_llm_config(
     form: LlmConfigCreate,
-    current_user: CurrentUser = Depends(require_permission("gateway:create")),
-    db: AsyncSession = Depends(get_db_session),
+    llm_config_repo: LlmConfigRepo,
+    current_user: UserInfo = Depends(require_permission("gateway:create")),
 ):
     """创建LLM配置"""
     try:
-        repository = LlmConfigRepository(db)
-
         # 生成配置ID
         config_id = _generate_config_id()
 
@@ -96,7 +85,7 @@ async def create_llm_config(
             status=1,
         )
 
-        result = await repository.create_llm_config(llm_config)
+        result = await llm_config_repo.create_llm_config(llm_config)
         logger.info(f"创建LLM配置成功: config_id={config_id}, name={form.config_name}")
 
         return Result.success(
@@ -115,18 +104,16 @@ async def create_llm_config(
 async def update_llm_config(
     config_id: int,
     form: LlmConfigUpdate,
-    current_user: CurrentUser = Depends(require_permission("gateway:update")),
-    db: AsyncSession = Depends(get_db_session),
+    llm_config_repo: LlmConfigRepo,
+    current_user: UserInfo = Depends(require_permission("gateway:update")),
 ):
     """更新LLM配置"""
     try:
-        repository = LlmConfigRepository(db)
-
         update_data = {k: v for k, v in form.model_dump().items() if v is not None}
         if not update_data:
             return Result.error("INVALID_PARAM", "无更新数据")
 
-        result = await repository.update_llm_config(config_id, **update_data)
+        result = await llm_config_repo.update_llm_config(config_id, **update_data)
         if not result:
             return Result.error("NOT_FOUND", "LLM配置不存在")
 
@@ -139,13 +126,12 @@ async def update_llm_config(
 @router.delete("/llm-configs/{config_id}")
 async def delete_llm_config(
     config_id: int,
-    current_user: CurrentUser = Depends(require_permission("gateway:delete")),
-    db: AsyncSession = Depends(get_db_session),
+    llm_config_repo: LlmConfigRepo,
+    current_user: UserInfo = Depends(require_permission("gateway:delete")),
 ):
     """删除LLM配置"""
     try:
-        repository = LlmConfigRepository(db)
-        success = await repository.delete_llm_config(config_id)
+        success = await llm_config_repo.delete_llm_config(config_id)
 
         if not success:
             return Result.error("NOT_FOUND", "LLM配置不存在")
@@ -164,23 +150,22 @@ async def delete_llm_config(
 @router.get("/gateways/{gateway_id}/llms")
 async def get_gateway_llms(
     gateway_id: str,
-    current_user: CurrentUser = Depends(require_permission("gateway:read")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    gateway_repo: GatewayRepo,
+    llm_config_repo: LlmConfigRepo,
+    current_user: UserInfo = Depends(require_permission("gateway:read")),
 ):
     """获取网关绑定的LLM配置列表"""
     try:
-        gw_repo = GatewayRepository(db)
-        llm_repo = LlmConfigRepository(db)
-
         # 验证网关存在
-        gateway = await gw_repo.get_gateway_by_id(gateway_id)
+        gateway = await gateway_repo.get_gateway_by_id(gateway_id)
         if not gateway:
             return Result.error("NOT_FOUND", "网关不存在")
 
         # 检查网关级别权限
         await require_gateway_permission(gateway_id, "read", current_user, db)
 
-        llm_configs = await llm_repo.get_gateway_llm_configs(gateway_id)
+        llm_configs = await llm_config_repo.get_gateway_llm_configs(gateway_id)
 
         data = [
             {
@@ -205,16 +190,15 @@ async def get_gateway_llms(
 async def bind_llm_to_gateway(
     gateway_id: str,
     form: LlmConfigBindRequest,
-    current_user: CurrentUser = Depends(require_permission("gateway:update")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    gateway_repo: GatewayRepo,
+    llm_config_repo: LlmConfigRepo,
+    current_user: UserInfo = Depends(require_permission("gateway:update")),
 ):
     """绑定LLM配置到网关"""
     try:
-        gw_repo = GatewayRepository(db)
-        llm_repo = LlmConfigRepository(db)
-
         # 验证网关存在
-        gateway = await gw_repo.get_gateway_by_id(gateway_id)
+        gateway = await gateway_repo.get_gateway_by_id(gateway_id)
         if not gateway:
             return Result.error("NOT_FOUND", "网关不存在")
 
@@ -222,18 +206,18 @@ async def bind_llm_to_gateway(
         await require_gateway_permission(gateway_id, "update", current_user, db)
 
         # 验证LLM配置存在
-        llm_config = await llm_repo.get_llm_config_by_config_id(form.llm_config_id)
+        llm_config = await llm_config_repo.get_llm_config_by_config_id(form.llm_config_id)
         if not llm_config:
             return Result.error("NOT_FOUND", "LLM配置不存在")
 
         # 检查是否已绑定
-        is_bound = await llm_repo.is_llm_bound_to_gateway(
+        is_bound = await llm_config_repo.is_llm_bound_to_gateway(
             gateway_id, form.llm_config_id
         )
         if is_bound:
             return Result.error("ALREADY_BOUND", "该LLM配置已绑定到此网关")
 
-        await llm_repo.bind_llm_to_gateway(gateway_id, form.llm_config_id)
+        await llm_config_repo.bind_llm_to_gateway(gateway_id, form.llm_config_id)
         logger.info(
             f"绑定LLM到网关: gateway_id={gateway_id}, llm_config_id={form.llm_config_id}"
         )
@@ -250,16 +234,16 @@ async def bind_llm_to_gateway(
 async def unbind_llm_from_gateway(
     gateway_id: str,
     llm_config_id: str,
-    current_user: CurrentUser = Depends(require_permission("gateway:update")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    llm_config_repo: LlmConfigRepo,
+    current_user: UserInfo = Depends(require_permission("gateway:update")),
 ):
     """解绑LLM配置"""
     try:
         # 检查网关级别权限
         await require_gateway_permission(gateway_id, "update", current_user, db)
 
-        llm_repo = LlmConfigRepository(db)
-        await llm_repo.unbind_llm_from_gateway(gateway_id, llm_config_id)
+        await llm_config_repo.unbind_llm_from_gateway(gateway_id, llm_config_id)
 
         logger.info(f"解绑LLM: gateway_id={gateway_id}, llm_config_id={llm_config_id}")
         return Result.success(

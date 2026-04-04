@@ -7,10 +7,7 @@ import logging
 import httpx
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database import get_db_session
-from app.infrastructure.database.repositories import MicroserviceRepository, ToolRepository
 from app.infrastructure.database.models import (
     McpMicroservice, McpProtocolMapping, SysBusinessLine, McpGatewayMicroservice,
 )
@@ -22,11 +19,11 @@ from app.api.schemas.microservice import (
     ToolUpdateRequest,
 )
 from app.utils.result import Result, PageResult
-from app.api.routers.auth import (
-    require_auth,
-    require_permission,
-    UserInfo as CurrentUser,
+from app.api.deps import (
+    CurrentUser, UserInfo, DbSession,
+    MicroserviceRepo, ToolRepo,
 )
+from app.api.routers.auth import require_auth, require_permission
 from app.api.dependencies import (
     get_accessible_gateway_ids,
     check_tool_gateway_permission as _check_tool_gateway_permission,
@@ -45,14 +42,14 @@ router = APIRouter()
 
 @router.get("/microservices")
 async def list_microservices(
-    current_user: CurrentUser = Depends(require_auth),
-    db: AsyncSession = Depends(get_db_session),
+    current_user: CurrentUser,
+    db: DbSession,
+    microservice_repo: MicroserviceRepo,
+    tool_repo: ToolRepo,
 ) -> PageResult:
     """获取微服务列表（按网关查看权限过滤）"""
     try:
-        ms_repo = MicroserviceRepository(db)
-        tool_repo = ToolRepository(db)
-        microservices = await ms_repo.get_all_microservices()
+        microservices = await microservice_repo.get_all_microservices()
 
         # 基于网关 can_read 权限过滤微服务
         accessible_gw_ids = await get_accessible_gateway_ids(current_user, db)
@@ -65,7 +62,6 @@ async def list_microservices(
             result = await db.execute(stmt)
             accessible_ms_ids = {row[0] for row in result.all()}
 
-            # 过滤微服务：只返回绑定在可访问网关上的微服务
             microservices = [
                 ms for ms in microservices if ms.id in accessible_ms_ids
             ]
@@ -84,7 +80,6 @@ async def list_microservices(
                 if bl:
                     business_line_map[ms.business_line_id] = bl.line_name
 
-            # 业务线始终不为空：业务线名称 > 微服务名称
             bl_name = business_line_map.get(ms.business_line_id) if ms.business_line_id else None
             if not bl_name:
                 bl_name = ms.name
@@ -116,15 +111,14 @@ async def list_microservices(
 @router.post("/microservices")
 async def create_microservice(
     request: MicroserviceCreate,
-    current_user: CurrentUser = Depends(require_permission("microservice:create")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    microservice_repo: MicroserviceRepo,
+    current_user: UserInfo = Depends(require_permission("microservice:create")),
 ) -> Result:
     """创建微服务"""
     try:
-        ms_repo = MicroserviceRepository(db)
-
         # 检查名称是否已存在
-        existing = await ms_repo.get_microservice_by_name(request.name)
+        existing = await microservice_repo.get_microservice_by_name(request.name)
         if existing:
             return Result.error("4001", f"微服务名称已存在: {request.name}")
 
@@ -137,7 +131,7 @@ async def create_microservice(
             status=1,
         )
 
-        created = await ms_repo.create_microservice(microservice)
+        created = await microservice_repo.create_microservice(microservice)
 
         # 获取业务线名称
         bl_name = None
@@ -163,23 +157,22 @@ async def create_microservice(
 async def update_microservice(
     microservice_id: int,
     request: MicroserviceUpdate,
-    current_user: CurrentUser = Depends(require_permission("microservice:update")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    microservice_repo: MicroserviceRepo,
+    current_user: UserInfo = Depends(require_permission("microservice:update")),
 ) -> Result:
     """更新微服务"""
     try:
-        ms_repo = MicroserviceRepository(db)
-
         # 检查网关级别权限（can_update）
         await _check_microservice_gateway_permission(microservice_id, "update", current_user, db)
 
         # 如果要更新名称，检查是否重复
         if request.name:
-            existing = await ms_repo.get_microservice_by_name(request.name)
+            existing = await microservice_repo.get_microservice_by_name(request.name)
             if existing and existing.id != microservice_id:
                 return Result.error("4001", f"微服务名称已存在: {request.name}")
 
-        updated = await ms_repo.update_microservice(
+        updated = await microservice_repo.update_microservice(
             microservice_id,
             name=request.name,
             http_base_url=request.http_base_url,
@@ -215,18 +208,16 @@ async def update_microservice(
 @router.delete("/microservices/{microservice_id}")
 async def delete_microservice(
     microservice_id: int,
-    current_user: CurrentUser = Depends(require_permission("microservice:delete")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    microservice_repo: MicroserviceRepo,
+    current_user: UserInfo = Depends(require_permission("microservice:delete")),
 ) -> Result:
     """删除微服务"""
     try:
-        ms_repo = MicroserviceRepository(db)
-
         # 检查网关级别权限（can_delete）
         await _check_microservice_gateway_permission(microservice_id, "delete", current_user, db)
 
-        # 删除微服务
-        success = await ms_repo.delete_microservice(microservice_id)
+        success = await microservice_repo.delete_microservice(microservice_id)
 
         if not success:
             return Result.not_found("微服务不存在")
@@ -240,17 +231,16 @@ async def delete_microservice(
 @router.post("/microservices/{microservice_id}/check")
 async def check_microservice_health(
     microservice_id: int,
-    current_user: CurrentUser = Depends(require_permission("microservice:read")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    microservice_repo: MicroserviceRepo,
+    current_user: UserInfo = Depends(require_permission("microservice:read")),
 ) -> Result:
     """微服务健康检查"""
     try:
-        ms_repo = MicroserviceRepository(db)
-
         # 检查网关级别权限（can_read）
         await _check_microservice_gateway_permission(microservice_id, "read", current_user, db)
 
-        microservice = await ms_repo.get_microservice_by_id(microservice_id)
+        microservice = await microservice_repo.get_microservice_by_id(microservice_id)
 
         if not microservice:
             return Result.not_found("微服务不存在")
@@ -261,7 +251,6 @@ async def check_microservice_health(
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # 尝试访问基础URL或健康检查端点
                 check_url = microservice.http_base_url.rstrip("/")
                 if not check_url.endswith("/health"):
                     check_url += "/health"
@@ -280,7 +269,7 @@ async def check_microservice_health(
             check_message = str(e)
 
         # 更新健康状态
-        await ms_repo.update_microservice_health(microservice_id, health_status)
+        await microservice_repo.update_microservice_health(microservice_id, health_status)
 
         return Result.success(
             {"health_status": health_status, "message": check_message}
@@ -293,18 +282,17 @@ async def check_microservice_health(
 @router.get("/microservices/{microservice_id}/tools")
 async def get_microservice_tools(
     microservice_id: int,
-    current_user: CurrentUser = Depends(require_permission("tool:read")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    microservice_repo: MicroserviceRepo,
+    tool_repo: ToolRepo,
+    current_user: UserInfo = Depends(require_permission("tool:read")),
 ) -> PageResult:
     """获取微服务的工具列表"""
     try:
-        ms_repo = MicroserviceRepository(db)
-        tool_repo = ToolRepository(db)
-
         # 检查网关级别权限（can_read）
         await _check_microservice_gateway_permission(microservice_id, "read", current_user, db)
 
-        microservice = await ms_repo.get_microservice_by_id(microservice_id)
+        microservice = await microservice_repo.get_microservice_by_id(microservice_id)
         if not microservice:
             return PageResult.of(data=[], total=0, message="微服务不存在")
 
@@ -344,24 +332,23 @@ async def get_microservice_tools(
 
 @router.get("/tools/all")
 async def list_all_tools(
-    current_user: CurrentUser = Depends(require_permission("tool:read")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    tool_repo: ToolRepo,
+    microservice_repo: MicroserviceRepo,
+    current_user: UserInfo = Depends(require_permission("tool:read")),
 ) -> PageResult:
     """获取所有工具列表（按网关查看权限过滤，包含业务线信息）"""
     try:
-        tool_repo = ToolRepository(db)
-        ms_repo = MicroserviceRepository(db)
         tools = await tool_repo.get_all_tools()
 
         # 基于网关 can_read 权限过滤工具
         accessible_gw_ids = await get_accessible_gateway_ids(current_user, db)
         if accessible_gw_ids is not None:
-            # 非超级管理员：只返回有查看权限的网关下的工具
             accessible_set = set(accessible_gw_ids)
             tools = [t for t in tools if t.gateway_id in accessible_set]
 
         # 构建微服务映射
-        microservices = await ms_repo.get_all_microservices()
+        microservices = await microservice_repo.get_all_microservices()
         ms_map = {ms.id: ms for ms in microservices}
 
         # 构建业务线映射（确保 business_line 不为空）
@@ -375,7 +362,6 @@ async def list_all_tools(
         result = []
         for tool in tools:
             ms = ms_map.get(tool.microservice_id) if tool.microservice_id else None
-            # 业务线始终不为空：微服务业务线 > 微服务名称 > "未分类"
             bl_name = None
             if ms and ms.business_line_id:
                 bl_name = business_line_map.get(ms.business_line_id)
@@ -412,15 +398,13 @@ async def list_all_tools(
 async def bind_tool(
     tool_id: int,
     request: ToolBindRequest,
-    current_user: CurrentUser = Depends(require_permission("tool:update")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    tool_repo: ToolRepo,
+    microservice_repo: MicroserviceRepo,
+    current_user: UserInfo = Depends(require_permission("tool:update")),
 ) -> Result:
     """绑定工具到微服务"""
     try:
-        tool_repo = ToolRepository(db)
-        ms_repo = MicroserviceRepository(db)
-
-        # 检查工具是否存在
         tool = await tool_repo.get_tool_by_id(tool_id)
         if not tool:
             return Result.not_found("工具不存在")
@@ -428,8 +412,7 @@ async def bind_tool(
         # 检查网关级别权限（can_update）
         await _check_tool_gateway_permission(tool, "update", current_user, db)
 
-        # 检查微服务是否存在
-        microservice = await ms_repo.get_microservice_by_id(request.microservice_id)
+        microservice = await microservice_repo.get_microservice_by_id(request.microservice_id)
         if not microservice:
             return Result.not_found("微服务不存在")
 
@@ -445,13 +428,12 @@ async def bind_tool(
 async def update_tool_enabled(
     tool_id: int,
     request: ToolEnabledRequest,
-    current_user: CurrentUser = Depends(require_permission("tool:update")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    tool_repo: ToolRepo,
+    current_user: UserInfo = Depends(require_permission("tool:update")),
 ) -> Result:
     """更新工具启用状态"""
     try:
-        tool_repo = ToolRepository(db)
-
         tool = await tool_repo.get_tool_by_id(tool_id)
         if not tool:
             return Result.not_found("工具不存在")
@@ -471,13 +453,12 @@ async def update_tool_enabled(
 @router.get("/tools/{tool_id}/detail")
 async def get_tool_detail(
     tool_id: int,
-    current_user: CurrentUser = Depends(require_permission("tool:read")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    tool_repo: ToolRepo,
+    current_user: UserInfo = Depends(require_permission("tool:read")),
 ) -> Result:
     """获取工具详情（含HTTP配置和参数映射）"""
     try:
-        tool_repo = ToolRepository(db)
-
         tool = await tool_repo.get_tool_by_id(tool_id)
         if not tool:
             return Result.not_found("工具不存在")
@@ -534,13 +515,12 @@ async def get_tool_detail(
 async def update_tool(
     tool_id: int,
     request: ToolUpdateRequest,
-    current_user: CurrentUser = Depends(require_permission("tool:update")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    tool_repo: ToolRepo,
+    current_user: UserInfo = Depends(require_permission("tool:update")),
 ) -> Result:
     """更新工具信息（含HTTP配置和参数映射）"""
     try:
-        tool_repo = ToolRepository(db)
-
         tool = await tool_repo.get_tool_by_id(tool_id)
         if not tool:
             return Result.not_found("工具不存在")

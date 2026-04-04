@@ -3,6 +3,7 @@
 Anthropic Provider - Anthropic API 调用（chat + stream）
 """
 
+import json
 import logging
 import asyncio
 import queue
@@ -130,6 +131,10 @@ async def chat_stream_anthropic(
         tool_calls = []
         content_blocks = []
         final_message = None
+        # 工具参数流式累积
+        current_tool_id = ""
+        current_tool_name = ""
+        current_tool_input_json = ""
 
         while True:
             try:
@@ -165,10 +170,13 @@ async def chat_stream_anthropic(
                                 "[LLM Event] content_block_start - thinking block started"
                             )
                         elif current_block_type == "tool_use":
+                            current_tool_id = getattr(content_block, "id", "")
+                            current_tool_name = getattr(content_block, "name", "")
+                            current_tool_input_json = ""
                             yield {
                                 "type": "tool_use_start",
-                                "id": getattr(content_block, "id", ""),
-                                "name": getattr(content_block, "name", ""),
+                                "id": current_tool_id,
+                                "name": current_tool_name,
                             }
                 elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)
@@ -191,6 +199,10 @@ async def chat_stream_anthropic(
                                     if safe_text:
                                         yield {"type": "text_delta", "text": safe_text}
                                         text_block_yielded_len = xml_start_idx
+                        elif delta_type == "input_json_delta":
+                            partial_json = getattr(delta, "partial_json", "")
+                            if partial_json:
+                                current_tool_input_json += partial_json
                         elif delta_type == "thinking_delta":
                             thinking_text = getattr(delta, "thinking", "")
                             yield {
@@ -218,6 +230,13 @@ async def chat_stream_anthropic(
                                     "id": tc["id"],
                                     "name": tc["name"],
                                 }
+                                # MiniMax XML路径：立即发送参数
+                                yield {
+                                    "type": "tool_input_ready",
+                                    "id": tc["id"],
+                                    "name": tc["name"],
+                                    "input": tc["input"],
+                                }
                                 yield {"type": "tool_use_stop"}
                             if clean_text:
                                 content_blocks.append(
@@ -236,19 +255,35 @@ async def chat_stream_anthropic(
                             )
                             yield {"type": "text_stop", "text": accumulated_text}
                     elif current_block_type == "tool_use":
+                        # 解析累积的工具参数并发送
+                        parsed_input = {}
+                        if current_tool_input_json:
+                            try:
+                                parsed_input = json.loads(current_tool_input_json)
+                            except Exception:
+                                parsed_input = {"_raw": current_tool_input_json}
+                        yield {
+                            "type": "tool_input_ready",
+                            "id": current_tool_id,
+                            "name": current_tool_name,
+                            "input": parsed_input,
+                        }
                         yield {"type": "tool_use_stop"}
+
+        # 保存流式阶段解析的 tool_calls（如 MiniMax XML 解析的，ID 与前端一致）
+        streaming_tool_calls = list(tool_calls)
 
         if final_message:
             logger.info(
                 f"流结束，最终消息包含 {len(final_message.content)} 个内容块"
             )
             content_blocks = []
-            tool_calls = []
+            final_tool_calls = []
 
             for block in final_message.content:
                 block_type = block.type
                 if block_type == "tool_use":
-                    tool_calls.append(
+                    final_tool_calls.append(
                         {"id": block.id, "name": block.name, "input": block.input}
                     )
                     content_blocks.append(
@@ -269,6 +304,16 @@ async def chat_stream_anthropic(
                     content_blocks.append(
                         {"type": "thinking", "thinking": thinking_content}
                     )
+
+            # 如果流式阶段已有 tool_calls（如 MiniMax XML 解析），保留其 ID（与前端一致）
+            # 但用 final_message 的 input 更新（更可靠的解析）
+            if streaming_tool_calls:
+                for i, stc in enumerate(streaming_tool_calls):
+                    if i < len(final_tool_calls):
+                        stc["input"] = final_tool_calls[i].get("input", stc["input"])
+                tool_calls = streaming_tool_calls
+            else:
+                tool_calls = final_tool_calls
 
         if accumulated_text and text_block_yielded_len < len(accumulated_text):
             remaining_text = accumulated_text[text_block_yielded_len:]

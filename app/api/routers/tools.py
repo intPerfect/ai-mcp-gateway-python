@@ -5,16 +5,11 @@ Tools Router - 工具管理路由
 
 import logging
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database import get_db_session
 from app.services.mcp_tool_registry import mcp_tool_registry
 from app.utils.result import Result
-from app.api.routers.auth import (
-    require_permission,
-    UserInfo as CurrentUser,
-)
-from app.domain.rbac.service import PermissionService
+from app.api.deps import UserInfo, DbSession, ToolRepo, PermissionSvc
+from app.api.routers.auth import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -23,35 +18,30 @@ router = APIRouter()
 
 @router.get("/tools")
 async def list_tools(
+    db: DbSession,
+    tool_repo: ToolRepo,
+    permission_service: PermissionSvc,
     gateway_id: str = None,
-    current_user: CurrentUser = Depends(require_permission("tool:read")),
-    db: AsyncSession = Depends(get_db_session),
+    current_user: UserInfo = Depends(require_permission("tool:read")),
 ):
     """获取所有已注册的工具（按网关权限过滤）"""
     try:
-        from app.infrastructure.database.repositories import ToolRepository
-
-        repository = ToolRepository(db)
-
         # 超级管理员可查看所有
         if "SUPER_ADMIN" in current_user.roles:
             if gateway_id:
-                tools = await repository.get_tools_by_gateway_id(gateway_id)
+                tools = await tool_repo.get_tools_by_gateway_id(gateway_id)
             else:
-                tools = await repository.get_tools_by_gateway_id()
+                tools = await tool_repo.get_tools_by_gateway_id()
         else:
             # 获取用户可访问的网关
-            rbac_service = PermissionService(db)
-            accessible_ids = await rbac_service.get_accessible_gateways(current_user.id)
+            accessible_ids = await permission_service.get_accessible_gateways(current_user.id)
 
             if gateway_id:
-                # 检查是否有该网关的权限
                 if gateway_id not in accessible_ids:
                     return Result.error("FORBIDDEN", "无权限访问此网关")
-                tools = await repository.get_tools_by_gateway_id(gateway_id)
+                tools = await tool_repo.get_tools_by_gateway_id(gateway_id)
             else:
-                # 获取所有可访问网关的工具
-                all_tools = await repository.get_tools_by_gateway_id()
+                all_tools = await tool_repo.get_tools_by_gateway_id()
                 tools = [t for t in all_tools if t.gateway_id in accessible_ids]
 
         data = [
@@ -80,30 +70,26 @@ async def list_tools(
 
 @router.get("/tools/status")
 async def get_tools_status(
+    tool_repo: ToolRepo,
+    permission_service: PermissionSvc,
     gateway_id: str = None,
-    current_user: CurrentUser = Depends(require_permission("tool:read")),
-    db: AsyncSession = Depends(get_db_session),
+    current_user: UserInfo = Depends(require_permission("tool:read")),
 ):
     """获取工具状态（按网关权限过滤）"""
     try:
-        from app.infrastructure.database.repositories import ToolRepository
-
-        repository = ToolRepository(db)
-
         # 超级管理员可查看所有
         if "SUPER_ADMIN" in current_user.roles:
             if gateway_id:
-                tools = await repository.get_tools_by_gateway_id(gateway_id)
+                tools = await tool_repo.get_tools_by_gateway_id(gateway_id)
             else:
-                tools = await repository.get_tools_by_gateway_id()
+                tools = await tool_repo.get_tools_by_gateway_id()
         else:
-            rbac_service = PermissionService(db)
-            accessible_ids = await rbac_service.get_accessible_gateways(current_user.id)
+            accessible_ids = await permission_service.get_accessible_gateways(current_user.id)
 
             if gateway_id and gateway_id not in accessible_ids:
                 return Result.error("FORBIDDEN", "无权限访问此网关")
 
-            all_tools = await repository.get_tools_by_gateway_id()
+            all_tools = await tool_repo.get_tools_by_gateway_id()
             if gateway_id:
                 tools = [t for t in all_tools if t.gateway_id == gateway_id]
             else:
@@ -131,17 +117,16 @@ async def get_tools_status(
 
 @router.post("/tools/reload")
 async def reload_tools(
+    db: DbSession,
+    permission_service: PermissionSvc,
     gateway_id: str = None,
     force: bool = False,
-    current_user: CurrentUser = Depends(require_permission("tool:update")),
-    db: AsyncSession = Depends(get_db_session),
+    current_user: UserInfo = Depends(require_permission("tool:update")),
 ):
     """重新加载工具（检查网关权限）"""
     try:
-        # 如果指定了gateway_id，检查权限
         if gateway_id and "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
+            has_perm = await permission_service.check_gateway_permission(
                 current_user.id, gateway_id, "update"
             )
             if not has_perm:
@@ -159,26 +144,22 @@ async def reload_tools(
 @router.get("/tools/{tool_name}/status")
 async def get_tool_status(
     tool_name: str,
+    tool_repo: ToolRepo,
+    permission_service: PermissionSvc,
     gateway_id: str = "gateway_001",
-    current_user: CurrentUser = Depends(require_permission("tool:read")),
-    db: AsyncSession = Depends(get_db_session),
+    current_user: UserInfo = Depends(require_permission("tool:read")),
 ):
     """获取单个工具的详细状态"""
     try:
         # 检查网关权限
         if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
+            has_perm = await permission_service.check_gateway_permission(
                 current_user.id, gateway_id, "read"
             )
             if not has_perm:
                 return Result.error("FORBIDDEN", "无权限访问此网关")
 
-        from app.infrastructure.database.repositories import ToolRepository
-
-        repository = ToolRepository(db)
-
-        tool = await repository.get_tool_by_name(gateway_id, tool_name)
+        tool = await tool_repo.get_tool_by_name(gateway_id, tool_name)
         if not tool:
             return Result.not_found(f"工具不存在: {tool_name}")
 
@@ -212,30 +193,27 @@ async def get_tool_status(
 @router.post("/tools/{tool_name}/health-check")
 async def health_check_tool(
     tool_name: str,
+    tool_repo: ToolRepo,
+    permission_service: PermissionSvc,
     gateway_id: str = "gateway_001",
-    current_user: CurrentUser = Depends(require_permission("tool:read")),
-    db: AsyncSession = Depends(get_db_session),
+    current_user: UserInfo = Depends(require_permission("tool:read")),
 ):
     """对指定工具进行健康检查"""
     try:
         # 检查网关权限
         if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
+            has_perm = await permission_service.check_gateway_permission(
                 current_user.id, gateway_id, "read"
             )
             if not has_perm:
                 return Result.error("FORBIDDEN", "无权限访问此网关")
 
-        from app.infrastructure.database.repositories import ToolRepository
-
-        repository = ToolRepository(db)
-        tool = await repository.get_tool_by_name(gateway_id, tool_name)
+        tool = await tool_repo.get_tool_by_name(gateway_id, tool_name)
 
         if not tool:
             return Result.not_found(f"工具不存在: {tool_name}")
 
-        http_config = await repository.get_protocol_http_by_id(tool.protocol_id)
+        http_config = await tool_repo.get_protocol_http_by_id(tool.protocol_id)
         if not http_config:
             return Result.not_found("HTTP配置不存在")
 

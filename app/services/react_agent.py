@@ -20,7 +20,7 @@ from enum import Enum
 from app.services.message_manager import MessageHistory, MessageBuilder
 from app.services.conversation_logger import conversation_logger
 from app.services.mcp_tool_registry import mcp_tool_registry
-from app.services.llm_service import LLMService
+from app.services.llm.base import LLMService
 from app.domain.protocol.websocket import WSEventFactory
 from app.config import get_settings
 from app.constants import REACT_SYSTEM_PROMPT
@@ -253,6 +253,8 @@ class ReActAgent:
             round_thinking = ""
             round_text = ""
             round_tool_calls = []
+            # 记录流式阶段已发送参数的工具ID
+            tools_with_args_sent = set()
 
             # 记录请求
             await conversation_logger.log_llm_request(
@@ -290,13 +292,26 @@ class ReActAgent:
                 elif event_type == "tool_use_start":
                     tool_id = llm_event.get("id", "")
                     tool_name = llm_event.get("name", "")
+                    logger.info(f"[ReAct][WS→] tool_use_start: id={tool_id}, name={tool_name}")
                     yield WSEventFactory.tool_use_start(tool_id, tool_name)
+
+                elif event_type == "tool_input_ready":
+                    # LLM流式输出完成单个工具的参数，立即发送给前端
+                    tool_id = llm_event.get("id", "")
+                    tool_name = llm_event.get("name", "")
+                    tool_input = llm_event.get("input", {})
+                    logger.info(f"[ReAct][WS→] tool_call(preparing): id={tool_id}, name={tool_name}, input_keys={list(tool_input.keys())}")
+                    yield WSEventFactory.tool_call(
+                        tool_id, tool_name, tool_input, "preparing"
+                    )
+                    tools_with_args_sent.add(tool_id)
 
                 elif event_type == "tool_use_stop":
                     yield WSEventFactory.tool_use_stop()
 
                 elif event_type == "stream_end":
                     round_tool_calls = llm_event.get("tool_calls", [])
+                    logger.info(f"[ReAct] stream_end: {len(round_tool_calls)} tool_calls, IDs={[tc.get('id','?') for tc in round_tool_calls]}")
 
                     # 从 content_blocks 获取文本
                     content_blocks = llm_event.get("content_blocks", [])
@@ -357,11 +372,12 @@ class ReActAgent:
 
             tool_results = []
 
-            # 并发执行工具 - 先发送所有 tool_call 事件
+            # 发送所有工具的 executing 状态（未在流式阶段发过的会同时带上参数）
             for tool_call in round_tool_calls:
                 tool_id = tool_call.get("id", f"tool_{secrets.token_hex(8)}")
                 tool_name = tool_call.get("name", "")
                 arguments = tool_call.get("input", {})
+                logger.info(f"[ReAct][WS→] tool_call(executing): id={tool_id}, name={tool_name}, input_keys={list(arguments.keys()) if isinstance(arguments, dict) else 'N/A'}")
                 yield WSEventFactory.tool_call(
                     tool_id, tool_name, arguments, "executing"
                 )
@@ -382,108 +398,90 @@ class ReActAgent:
                     error_result = {"error": str(e)}
                     return (tool_id, tool_name, error_result, False)
 
-            # 并发执行所有工具
-            tasks = [execute_single_tool(tc) for tc in round_tool_calls]
-            execution_results = await asyncio.gather(*tasks, return_exceptions=True)
+            # 并发执行所有工具，使用 as_completed 逐个返回结果
+            tasks = [
+                asyncio.ensure_future(execute_single_tool(tc))
+                for tc in round_tool_calls
+            ]
 
-            # 处理结果并发送事件
-            for i, exec_result in enumerate(execution_results):
-                tool_call = round_tool_calls[i]
-                tool_id = tool_call.get("id", f"tool_{secrets.token_hex(8)}")
-                tool_name = tool_call.get("name", "")
-                arguments = tool_call.get("input", {})
+            for coro in asyncio.as_completed(tasks):
+                try:
+                    exec_result = await coro
+                    tool_id, tool_name, result, success = exec_result
+                except Exception as exc:
+                    # 极端异常（正常不会触发，因为 execute_single_tool 内部已捕获）
+                    logger.error(f"[ReAct] 工具执行未预期异常: {exc}")
+                    continue
+                arguments = {}
+                # 找到对应的原始 tool_call 获取 arguments
+                for tc in round_tool_calls:
+                    if tc.get("id") == tool_id:
+                        arguments = tc.get("input", {})
+                        break
 
-                if isinstance(exec_result, Exception):
-                    # 异常情况
-                    error_result = {"error": str(exec_result)}
-                    tool_results.append(
-                        {
-                            "tool_use_id": tool_id,
-                            "tool_name": tool_name,
-                            "result": error_result,
-                            "success": False,
-                        }
+                tool_results.append(
+                    {
+                        "tool_use_id": tool_id,
+                        "tool_name": tool_name,
+                        "result": result,
+                        "success": success,
+                    }
+                )
+
+                if success:
+                    step.observation = json.dumps(result, ensure_ascii=False)[:1000]
+                    session.tools_called.append(tool_name)
+
+                    # 记录工具调用使用量
+                    if session.gateway_id and session.key_id:
+                        try:
+                            async with async_session_factory() as db_session:
+                                usage_service = await get_usage_service(
+                                    session=db_session
+                                )
+                                await usage_service.check_and_increment(
+                                    gateway_id=session.gateway_id,
+                                    key_id=session.key_id,
+                                    call_type="tool",
+                                    call_detail=tool_name,
+                                    session_id=session.session_id,
+                                )
+                        except RateLimitException as e:
+                            logger.warning(f"[ReAct] 工具调用超限: {e}")
+                        except Exception as e:
+                            logger.error(f"[ReAct] 记录工具使用量失败: {e}")
+
+                    await conversation_logger.log_tool_call(
+                        session.session_id,
+                        tool_id,
+                        tool_name,
+                        arguments,
+                        step.step_num,
                     )
-                    step.observation = f"Error: {str(exec_result)}"
-
                     await conversation_logger.log_tool_result(
                         session.session_id,
                         tool_id,
                         tool_name,
-                        error_result,
-                        False,
+                        result,
+                        True,
                         step.step_num,
                     )
                 else:
-                    # 正常结果
-                    _, _, result, success = exec_result
-                    tool_results.append(
-                        {
-                            "tool_use_id": tool_id,
-                            "tool_name": tool_name,
-                            "result": result,
-                            "success": success,
-                        }
+                    step.observation = (
+                        f"Error: {result.get('error', 'Unknown error')}"
+                    )
+                    await conversation_logger.log_tool_result(
+                        session.session_id,
+                        tool_id,
+                        tool_name,
+                        result,
+                        False,
+                        step.step_num,
                     )
 
-                    if success:
-                        step.observation = json.dumps(result, ensure_ascii=False)[:1000]
-                        session.tools_called.append(tool_name)
-
-                        # 记录工具调用使用量
-                        if session.gateway_id and session.key_id:
-                            try:
-                                async with async_session_factory() as db_session:
-                                    usage_service = await get_usage_service(
-                                        session=db_session
-                                    )
-                                    await usage_service.check_and_increment(
-                                        gateway_id=session.gateway_id,
-                                        key_id=session.key_id,
-                                        call_type="tool",
-                                        call_detail=tool_name,
-                                        session_id=session.session_id,
-                                    )
-                            except RateLimitException as e:
-                                logger.warning(f"[ReAct] 工具调用超限: {e}")
-                            except Exception as e:
-                                logger.error(f"[ReAct] 记录工具使用量失败: {e}")
-
-                        await conversation_logger.log_tool_call(
-                            session.session_id,
-                            tool_id,
-                            tool_name,
-                            arguments,
-                            step.step_num,
-                        )
-                        await conversation_logger.log_tool_result(
-                            session.session_id,
-                            tool_id,
-                            tool_name,
-                            result,
-                            True,
-                            step.step_num,
-                        )
-                    else:
-                        step.observation = (
-                            f"Error: {result.get('error', 'Unknown error')}"
-                        )
-
-                        await conversation_logger.log_tool_result(
-                            session.session_id,
-                            tool_id,
-                            tool_name,
-                            result,
-                            False,
-                            step.step_num,
-                        )
-
-                # 发送 tool_result 事件
+                # 每个工具完成后立即发送 tool_result 事件
                 yield WSEventFactory.tool_result(
-                    tool_id,
-                    tool_name,
-                    tool_results[-1]["result"],
-                    tool_results[-1]["success"],
+                    tool_id, tool_name, result, success
                 )
 
             # 将观察结果添加到消息历史

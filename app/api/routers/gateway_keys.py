@@ -6,17 +6,12 @@ Gateway Keys Router - 网关Key管理路由
 import logging
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database import get_db_session
 from app.infrastructure.database.models import McpGatewayAuth
-from app.infrastructure.database.repositories import AuthRepository
 from app.utils.result import Result
 from app.utils.security import generate_api_key, hash_password
-from app.api.routers.auth import (
-    require_permission,
-    UserInfo as CurrentUser,
-)
+from app.api.deps import UserInfo, DbSession, AuthRepo
+from app.api.routers.auth import require_permission
 from app.api.dependencies import require_gateway_permission, get_accessible_gateway_ids
 from app.api.schemas.gateway import GatewayKeyCreate
 
@@ -27,13 +22,13 @@ router = APIRouter()
 
 @router.get("/gateway-keys")
 async def get_gateway_keys(
-    current_user: CurrentUser = Depends(require_permission("gateway:read")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    auth_repo: AuthRepo,
+    current_user: UserInfo = Depends(require_permission("gateway:read")),
 ):
     """获取网关Key列表（脱敏，按权限过滤）"""
     try:
-        repository = AuthRepository(db)
-        keys = await repository.get_all_gateway_keys()
+        keys = await auth_repo.get_all_gateway_keys()
 
         # 按权限过滤
         accessible_ids = await get_accessible_gateway_ids(current_user, db)
@@ -63,15 +58,14 @@ async def get_gateway_keys(
 @router.post("/gateway-keys")
 async def create_gateway_key(
     form: GatewayKeyCreate,
-    current_user: CurrentUser = Depends(require_permission("gateway:create")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    auth_repo: AuthRepo,
+    current_user: UserInfo = Depends(require_permission("gateway:create")),
 ):
     """创建网关Key（返回完整Key，仅此一次）"""
     try:
         # 检查网关级别权限
         await require_gateway_permission(form.gateway_id, "create", current_user, db)
-
-        repository = AuthRepository(db)
 
         # 生成 API Key
         key_id, full_api_key = generate_api_key()
@@ -91,7 +85,7 @@ async def create_gateway_key(
             status=1,
         )
 
-        await repository.create_gateway_key(auth)
+        await auth_repo.create_gateway_key(auth)
 
         logger.info(f"创建网关Key成功: gateway_id={form.gateway_id}, key_id={key_id}")
 
@@ -113,22 +107,21 @@ async def create_gateway_key(
 @router.delete("/gateway-keys/{key_id}")
 async def delete_gateway_key(
     key_id: int,
-    current_user: CurrentUser = Depends(require_permission("gateway:delete")),
-    db: AsyncSession = Depends(get_db_session),
+    db: DbSession,
+    auth_repo: AuthRepo,
+    current_user: UserInfo = Depends(require_permission("gateway:delete")),
 ):
     """删除网关Key"""
     try:
-        repository = AuthRepository(db)
-
         # 先获取Key信息以检查权限
-        key = await repository.get_gateway_key_by_id(key_id)
+        key = await auth_repo.get_gateway_key_by_id(key_id)
         if not key:
             return Result.error("NOT_FOUND", "Key不存在")
 
         # 检查网关级别权限
         await require_gateway_permission(key.gateway_id, "delete", current_user, db)
 
-        success = await repository.delete_gateway_key(key_id)
+        success = await auth_repo.delete_gateway_key(key_id)
 
         if not success:
             return Result.error("NOT_FOUND", "Key不存在")
