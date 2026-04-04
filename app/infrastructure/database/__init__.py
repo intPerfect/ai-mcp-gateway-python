@@ -16,11 +16,12 @@ from app.infrastructure.database.models import (
     McpProtocolHttp,
     McpProtocolMapping
 )
-from app.infrastructure.database.repository import McpGatewayRepository
+# 兼容层：保持原有导入不变
+from app.infrastructure.database.repository import McpGatewayRepository, RbacRepository
 
 __all__ = [
     "async_session_factory", "get_db_session", "engine", "Base", "init_db",
     "McpGateway", "McpGatewayAuth", "McpGatewayTool",
     "McpProtocolHttp", "McpProtocolMapping",
-    "McpGatewayRepository"
+    "McpGatewayRepository", "RbacRepository",
 ]

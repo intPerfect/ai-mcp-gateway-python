@@ -20,7 +20,7 @@
     # 链式调用
     return Result.success().with_data(user).with_message("操作成功")
 """
-from typing import Any, Dict, Generic, List, Optional, TypeVar, Union
+from typing import Dict, Generic, List, Optional, TypeVar, Union
 from enum import Enum
 from pydantic import BaseModel
 

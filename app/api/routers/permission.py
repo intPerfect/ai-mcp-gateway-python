@@ -15,7 +15,7 @@ from app.domain.rbac import (
     PermissionTreeNode, ResourcePermissionGroup, DataScopeTreeNode
 )
 from app.utils.result import Result
-from app.api.routers.auth import require_auth, require_permission, UserInfo as CurrentUser
+from app.api.routers.auth import require_auth, UserInfo as CurrentUser
 
 logger = logging.getLogger(__name__)
 

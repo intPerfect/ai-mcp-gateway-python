@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import get_db_session
 from app.utils.result import Result
-from app.api.routers.auth import require_permission, require_auth, UserInfo as CurrentUser
+from app.api.routers.auth import require_permission, UserInfo as CurrentUser
 
 logger = logging.getLogger(__name__)
 

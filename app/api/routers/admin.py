@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 
 from app.infrastructure.database import get_db_session
-from app.infrastructure.database.models import McpUsageLog, McpGatewayAuth, McpGateway
-from app.domain.usage.service import UsageService, get_usage_service
+from app.infrastructure.database.models import McpUsageLog, McpGatewayAuth
+from app.domain.usage.service import get_usage_service
 from app.utils.result import Result
 from app.api.routers.auth import require_auth, UserInfo as CurrentUser
 from app.domain.rbac.service import PermissionService

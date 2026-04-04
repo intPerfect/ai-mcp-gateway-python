@@ -14,7 +14,7 @@ from redis.asyncio import Redis
 from app.config import get_settings
 from app.infrastructure.cache.redis_client import RedisClient, get_redis
 from app.infrastructure.database.models import McpUsageLog
-from app.infrastructure.database import McpGatewayRepository
+from app.infrastructure.database.repositories import AuthRepository
 from app.utils.exceptions import RateLimitException
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class UsageService:
 
     def __init__(self, session: AsyncSession = None, redis: Redis = None):
         self.session = session
-        self.repository = McpGatewayRepository(session) if session else None
+        self.repository = AuthRepository(session) if session else None
         self._redis = redis
         self._redis_client: Optional[RedisClient] = None
 

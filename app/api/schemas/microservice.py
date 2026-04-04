@@ -69,3 +69,33 @@ class ToolResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ParameterMappingItem(BaseModel):
+    """参数映射项"""
+    param_location: str  # path/query/body/form/header/file
+    field_name: str
+    field_type: str = "string"
+    field_desc: str = ""
+    is_required: int = 0
+    default_value: Optional[str] = None
+    enum_values: Optional[str] = None
+    example_value: Optional[str] = None
+    sort_order: int = 0
+
+
+class HttpConfigUpdate(BaseModel):
+    """HTTP配置更新"""
+    http_url: Optional[str] = None
+    http_method: Optional[str] = None
+    http_headers: Optional[str] = None
+    timeout: Optional[int] = None
+    retry_times: Optional[int] = None
+
+
+class ToolUpdateRequest(BaseModel):
+    """工具更新请求"""
+    tool_name: Optional[str] = None
+    tool_description: Optional[str] = None
+    http_config: Optional[HttpConfigUpdate] = None
+    parameters: Optional[list[ParameterMappingItem]] = None

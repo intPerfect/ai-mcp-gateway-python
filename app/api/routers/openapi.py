@@ -14,7 +14,7 @@ from app.infrastructure.database.models import (
     McpProtocolHttp,
     McpProtocolMapping,
 )
-from app.infrastructure.database import McpGatewayRepository
+from app.infrastructure.database.repositories import ToolRepository
 from app.api.schemas.openapi import OpenAPIImportRequest
 from app.domain.protocol.openapi import (
     parse_openapi_spec,
@@ -68,7 +68,7 @@ async def import_openapi(
 
         # 导入到数据库
         imported = []
-        repository = McpGatewayRepository(db)
+        repository = ToolRepository(db)
 
         for tool in tools:
             try:

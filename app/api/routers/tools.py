@@ -11,7 +11,6 @@ from app.infrastructure.database import get_db_session
 from app.services.mcp_tool_registry import mcp_tool_registry
 from app.utils.result import Result
 from app.api.routers.auth import (
-    require_auth,
     require_permission,
     UserInfo as CurrentUser,
 )
@@ -30,9 +29,9 @@ async def list_tools(
 ):
     """获取所有已注册的工具（按网关权限过滤）"""
     try:
-        from app.infrastructure.database import McpGatewayRepository
+        from app.infrastructure.database.repositories import ToolRepository
 
-        repository = McpGatewayRepository(db)
+        repository = ToolRepository(db)
 
         # 超级管理员可查看所有
         if "SUPER_ADMIN" in current_user.roles:
@@ -87,9 +86,9 @@ async def get_tools_status(
 ):
     """获取工具状态（按网关权限过滤）"""
     try:
-        from app.infrastructure.database import McpGatewayRepository
+        from app.infrastructure.database.repositories import ToolRepository
 
-        repository = McpGatewayRepository(db)
+        repository = ToolRepository(db)
 
         # 超级管理员可查看所有
         if "SUPER_ADMIN" in current_user.roles:
@@ -175,9 +174,9 @@ async def get_tool_status(
             if not has_perm:
                 return Result.error("FORBIDDEN", "无权限访问此网关")
 
-        from app.infrastructure.database import McpGatewayRepository
+        from app.infrastructure.database.repositories import ToolRepository
 
-        repository = McpGatewayRepository(db)
+        repository = ToolRepository(db)
 
         tool = await repository.get_tool_by_name(gateway_id, tool_name)
         if not tool:
@@ -228,9 +227,9 @@ async def health_check_tool(
             if not has_perm:
                 return Result.error("FORBIDDEN", "无权限访问此网关")
 
-        from app.infrastructure.database import McpGatewayRepository
+        from app.infrastructure.database.repositories import ToolRepository
 
-        repository = McpGatewayRepository(db)
+        repository = ToolRepository(db)
         tool = await repository.get_tool_by_name(gateway_id, tool_name)
 
         if not tool:

@@ -6,7 +6,7 @@ OpenAPI Generator - 工具配置生成器
 import json
 import logging
 from typing import Dict, List, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.domain.protocol.openapi.parser import OpenAPIToolInfo
 

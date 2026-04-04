@@ -16,16 +16,17 @@ import secrets
 from typing import Any, Dict, List, Optional, AsyncGenerator, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
-from datetime import datetime
 
 from app.services.message_manager import MessageHistory, MessageBuilder
 from app.services.conversation_logger import conversation_logger
-from app.services.llm_service import llm_service
+from app.services.mcp_tool_registry import mcp_tool_registry
+from app.services.llm_service import LLMService
 from app.domain.protocol.websocket import WSEventFactory
 from app.config import get_settings
 from app.constants import REACT_SYSTEM_PROMPT
-from app.domain.usage.service import UsageService, get_usage_service
+from app.domain.usage.service import get_usage_service
 from app.utils.exceptions import RateLimitException
+from app.infrastructure.database import async_session_factory
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -225,8 +226,6 @@ class ReActAgent:
             # 检查并增加使用计数（调用前检查）
             if session.gateway_id and session.key_id:
                 try:
-                    from app.infrastructure.database import async_session_factory
-
                     async with async_session_factory() as db_session:
                         usage_service = await get_usage_service(session=db_session)
                         await usage_service.check_and_increment(
@@ -257,8 +256,6 @@ class ReActAgent:
             )
 
             # 流式调用 LLM（使用会话特定的配置）
-            from app.services.llm_service import LLMService
-
             session_llm_service = LLMService(
                 api_type=session.api_type,
                 base_url=session.base_url,
@@ -377,7 +374,7 @@ class ReActAgent:
                 arguments = tool_call.get("input", {})
 
                 try:
-                    result = await llm_service.execute_tool(tool_name, arguments)
+                    result = await mcp_tool_registry.execute_tool(tool_name, arguments)
                     return (tool_id, tool_name, result, True)
                 except Exception as e:
                     error_result = {"error": str(e)}
@@ -434,10 +431,6 @@ class ReActAgent:
                         # 记录工具调用使用量
                         if session.gateway_id and session.key_id:
                             try:
-                                from app.infrastructure.database import (
-                                    async_session_factory,
-                                )
-
                                 async with async_session_factory() as db_session:
                                     usage_service = await get_usage_service(
                                         session=db_session

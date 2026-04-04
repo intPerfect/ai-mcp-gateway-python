@@ -3,7 +3,6 @@
 OpenAPI Parser - OpenAPI规范解析器
 从OpenAPI规范中提取工具信息
 """
-import json
 import logging
 import re
 from typing import Any, Dict, List, Optional

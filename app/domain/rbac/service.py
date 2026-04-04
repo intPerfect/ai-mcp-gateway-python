@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.infrastructure.database.repository import RbacRepository
 from app.infrastructure.database.models import (
     SysUser, SysRole,
-    SysPermission, SysLoginLog, SysBusinessLine, SysUserBusinessLine
+    SysPermission, SysLoginLog
 )
 from app.domain.rbac.models import (
     LoginRequest, LoginResponse, UserInfo,

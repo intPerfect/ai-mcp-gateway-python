@@ -7,9 +7,8 @@ WebSocket Protocol - 统一的WebSocket事件协议
 
 import json
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
-from datetime import datetime
 
 
 # ============ 事件类型定义 ============

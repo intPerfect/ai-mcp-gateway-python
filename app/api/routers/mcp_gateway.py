@@ -5,7 +5,6 @@ MCP Gateway Router - SSE endpoints for MCP protocol
 import json
 import asyncio
 import logging
-from typing import Optional
 from fastapi import APIRouter, Query, Request, Response, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
@@ -53,12 +52,13 @@ async def handle_sse_connection(
         except AuthException as e:
             logger.warning(f"Auth failed for gateway {gateway_id}: {e.message}")
             # Return error event
+            err_code, err_msg = e.code, e.message
             async def error_generator():
                 yield {
                     "event": "error",
                     "data": json.dumps({
-                        "code": e.code,
-                        "info": e.message
+                        "code": err_code,
+                        "info": err_msg
                     })
                 }
             return EventSourceResponse(error_generator())
@@ -118,12 +118,13 @@ async def handle_sse_connection(
         
     except AppException as e:
         logger.error(f"SSE connection rejected, gateway_id: {gateway_id}, error: {e.message}")
+        err_code, err_msg = e.code, e.message
         async def error_generator():
             yield {
                 "event": "error",
                 "data": json.dumps({
-                    "code": e.code,
-                    "info": e.message
+                    "code": err_code,
+                    "info": err_msg
                 })
             }
         return EventSourceResponse(error_generator())
@@ -185,7 +186,7 @@ async def handle_message(
             content={"code": e.code, "info": e.message}
         )
     except Exception as e:
-        logger.error(f"Message handling error", exc_info=True)
+        logger.error("Message handling error", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"code": "INTERNAL_ERROR", "info": str(e)}

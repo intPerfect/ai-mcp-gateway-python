@@ -7,7 +7,7 @@ Chat Router - WebSocket对话路由
 import json
 import logging
 from typing import Optional, List
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Body
+from fastapi import APIRouter, WebSocketDisconnect, HTTPException, Body
 from pydantic import BaseModel
 
 from app.api.schemas.chat import (
@@ -17,7 +17,7 @@ from app.api.schemas.chat import (
     MicroserviceInfo,
     LlmConfigInfo,
 )
-from app.domain.session.service import ws_session_manager, PendingSession
+from app.domain.session.service import ws_session_manager
 from app.services.react_agent import react_agent, AgentSession
 from app.services.mcp_tool_registry import mcp_tool_registry
 from app.services.conversation_logger import conversation_logger

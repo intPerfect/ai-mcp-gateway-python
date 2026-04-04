@@ -3,18 +3,13 @@ MCP Message Handler - Handles JSON-RPC messages for MCP protocol v3.0
 """
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.infrastructure.database import McpGatewayRepository
+from app.infrastructure.database.repositories import GatewayRepository, ToolRepository
 from app.domain.session.models import (
-    ToolConfig, 
-    ProtocolMapping, 
-    HttpConfig, 
-    ToolProtocolConfig,
-    GatewayConfig
+    HttpConfig
 )
 from app.domain.protocol.http_gateway import HttpGateway
-from app.utils.exceptions import MethodNotFoundException
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +31,8 @@ class MessageHandler:
     """MCP JSON-RPC消息处理器"""
     
     def __init__(self, session: AsyncSession):
-        self.repository = McpGatewayRepository(session)
+        self.gateway_repo = GatewayRepository(session)
+        self.tool_repo = ToolRepository(session)
         self.http_gateway = HttpGateway()
     
     async def handle(self, gateway_id: str, message_body: str) -> Dict[str, Any]:
@@ -82,7 +78,7 @@ class MessageHandler:
     
     async def _handle_initialize(self, gateway_id: str, msg_id: Any, params: Dict) -> Dict:
         """处理初始化请求"""
-        gateway = await self.repository.get_gateway_by_id(gateway_id)
+        gateway = await self.gateway_repo.get_gateway_by_id(gateway_id)
         
         server_name = "Python MCP Gateway"
         server_version = "1.0.0"
@@ -125,11 +121,11 @@ class MessageHandler:
     
     async def _handle_tools_list(self, gateway_id: str, msg_id: Any, params: Dict) -> Dict:
         """处理工具列表请求"""
-        tools = await self.repository.get_tools_by_gateway_id(gateway_id)
+        tools = await self.tool_repo.get_tools_by_gateway_id(gateway_id)
         
         tool_list = []
         for tool in tools:
-            mappings = await self.repository.get_protocol_mappings(tool.protocol_id)
+            mappings = await self.tool_repo.get_protocol_mappings(tool.protocol_id)
             input_schema = self._build_input_schema(mappings)
             
             tool_list.append({
@@ -155,11 +151,11 @@ class MessageHandler:
             if not tool_name:
                 return self._error_response(msg_id, McpErrorCodes.INVALID_PARAMS, "Tool name is required")
             
-            tool = await self.repository.get_tool_by_name(gateway_id, tool_name)
+            tool = await self.tool_repo.get_tool_by_name(gateway_id, tool_name)
             if not tool:
                 return self._error_response(msg_id, McpErrorCodes.METHOD_NOT_FOUND, f"Tool not found: {tool_name}")
             
-            http_protocol = await self.repository.get_protocol_http_by_id(tool.protocol_id)
+            http_protocol = await self.tool_repo.get_protocol_http_by_id(tool.protocol_id)
             if not http_protocol:
                 return self._error_response(msg_id, McpErrorCodes.INTERNAL_ERROR, "Protocol configuration not found")
             

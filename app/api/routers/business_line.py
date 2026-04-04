@@ -3,30 +3,18 @@
 业务线管理 API 路由
 """
 
-from typing import List, Optional
+from typing import List
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.result import Result, ResultCode
 from app.infrastructure.database.connection import get_db_session
-from app.infrastructure.database.repository import RbacRepository
+from app.infrastructure.database.repositories import BusinessLineRepository
 from app.infrastructure.database.models import SysBusinessLine
 from app.api.routers.auth import require_auth, UserInfo as CurrentUser
+from app.api.schemas.user import BusinessLineCreate, BusinessLineUpdate
 
 router = APIRouter(prefix="/api/business-lines", tags=["业务线管理"])
-
-
-class BusinessLineCreate(BaseModel):
-    line_code: str
-    line_name: str
-    description: Optional[str] = None
-
-
-class BusinessLineUpdate(BaseModel):
-    line_name: Optional[str] = None
-    description: Optional[str] = None
-    status: Optional[int] = None
 
 
 def bl_to_dict(bl: SysBusinessLine) -> dict:
@@ -48,7 +36,7 @@ async def list_business_lines(
     current_user: CurrentUser = Depends(require_auth),
 ):
     """获取所有业务线列表"""
-    repo = RbacRepository(session)
+    repo = BusinessLineRepository(session)
     business_lines = await repo.get_all_business_lines()
     return Result.success(data=[bl_to_dict(bl) for bl in business_lines])
 
@@ -60,7 +48,7 @@ async def get_business_line(
     current_user: CurrentUser = Depends(require_auth),
 ):
     """获取单个业务线"""
-    repo = RbacRepository(session)
+    repo = BusinessLineRepository(session)
     bl = await repo.get_business_line_by_id(bl_id)
     if not bl:
         return Result.not_found("业务线不存在")
@@ -77,7 +65,7 @@ async def create_business_line(
     if "SUPER_ADMIN" not in current_user.roles:
         return Result.forbidden("仅超级管理员可创建业务线")
 
-    repo = RbacRepository(session)
+    repo = BusinessLineRepository(session)
     existing = await repo.get_business_line_by_code(request.line_code)
     if existing:
         return Result.error(ResultCode.DATA_EXISTS, "业务线编码已存在")
@@ -103,7 +91,7 @@ async def update_business_line(
     if "SUPER_ADMIN" not in current_user.roles:
         return Result.forbidden("仅超级管理员可更新业务线")
 
-    repo = RbacRepository(session)
+    repo = BusinessLineRepository(session)
     update_data = {}
     if request.line_name is not None:
         update_data["line_name"] = request.line_name
@@ -128,7 +116,7 @@ async def delete_business_line(
     if "SUPER_ADMIN" not in current_user.roles:
         return Result.forbidden("仅超级管理员可删除业务线")
 
-    repo = RbacRepository(session)
+    repo = BusinessLineRepository(session)
     success = await repo.delete_business_line(bl_id)
     if not success:
         return Result.not_found("业务线不存在")

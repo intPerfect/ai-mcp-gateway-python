@@ -2,12 +2,11 @@
 Authentication service for MCP Gateway
 """
 
-import secrets
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.infrastructure.database import McpGatewayRepository
+from app.infrastructure.database.repositories import AuthRepository
 from app.infrastructure.database.models import McpGatewayAuth
 from app.domain.auth.models import (
     LicenseCommand,
@@ -30,7 +29,7 @@ class AuthService:
     """Authentication and authorization service"""
 
     def __init__(self, session: AsyncSession):
-        self.repository = McpGatewayRepository(session)
+        self.repository = AuthRepository(session)
         self._rate_limit_cache: dict = {}
 
     async def validate_license(self, command: LicenseCommand) -> bool:

@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 LOGS_DIR = Path(__file__).parent.parent / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
@@ -83,8 +85,9 @@ from app.api.routers import (
     business_line_router,
 )
 from app.api.routers.admin import router as admin_router
-from app.api.routers.chat import websocket_handler, load_tools_from_db
-from app.services.mcp_tool_registry import mcp_tool_registry
+from app.api.routers.chat import websocket_handler
+from app.utils.exceptions import AppException
+from app.utils.result import Result
 
 settings = get_settings()
 
@@ -114,6 +117,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============ 全局异常处理器 ============
+
+
+@app.exception_handler(AppException)
+async def app_exception_handler(request, exc: AppException):
+    """AppException 统一处理"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=Result.error(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc: RequestValidationError):
+    """参数验证异常统一处理"""
+    return JSONResponse(
+        status_code=422,
+        content=Result.error("VALIDATION_ERROR", str(exc)).model_dump(),
+    )
 
 app.include_router(mcp_router, prefix="/api-gateway", tags=["MCP Gateway"])
 app.include_router(tools_router, prefix="/api", tags=["Tools"])

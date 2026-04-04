@@ -7,12 +7,11 @@ import asyncio
 import json
 import logging
 from typing import Dict, Any, List, Optional, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import McpGatewayRepository, async_session_factory
-from app.infrastructure.database.models import McpGatewayTool, McpProtocolHttp
 
 logger = logging.getLogger(__name__)
 
@@ -400,10 +399,6 @@ class McpToolRegistry:
         """
             
         async def handler(args: Dict[str, Any]) -> Any:
-            # 初始化调用统计（使用缓存的值避免额外数据库查询）
-            current_call_count = 0
-            current_error_count = 0
-                
             try:
                 # 直接执行HTTP请求，不再预先查询数据库
                 async with httpx.AsyncClient(timeout=timeout / 1000) as client:

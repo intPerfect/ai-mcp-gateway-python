@@ -6,9 +6,7 @@ Gateway Router - 网关管理路由
 
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, List
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import get_db_session
@@ -16,11 +14,14 @@ from app.infrastructure.database.models import (
     McpGateway,
     McpGatewayAuth,
     McpLlmConfig,
-    McpGatewayLlm,
     SysBusinessLine,
 )
-from app.infrastructure.database import McpGatewayRepository
-from app.domain.rbac.service import PermissionService
+from app.infrastructure.database.repositories import (
+    GatewayRepository,
+    AuthRepository,
+    LlmConfigRepository,
+    MicroserviceRepository,
+)
 from app.utils.result import Result
 from app.utils.security import generate_api_key, hash_password
 from app.api.routers.auth import (
@@ -28,78 +29,22 @@ from app.api.routers.auth import (
     require_permission,
     UserInfo as CurrentUser,
 )
+from app.api.dependencies import require_gateway_permission, get_accessible_gateway_ids
+from app.api.schemas.gateway import (
+    GatewayCreate,
+    GatewayUpdate,
+    GatewayKeyCreate,
+    GatewayMicroserviceBind,
+)
+from app.api.schemas.llm_config import (
+    LlmConfigCreate,
+    LlmConfigUpdate,
+    LlmConfigBindRequest,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-async def check_gateway_data_permission(
-    user_id: int,
-    gateway_id_str: str,
-    permission_type: str,
-    db: AsyncSession,
-) -> bool:
-    """检查用户对特定网关的数据权限"""
-    rbac_service = PermissionService(db)
-    return await rbac_service.check_gateway_permission(
-        user_id, gateway_id_str, permission_type
-    )
-
-
-# ============================================
-# Pydantic Schemas
-# ============================================
-
-
-class GatewayCreate(BaseModel):
-    gateway_id: str
-    gateway_name: str
-    gateway_desc: Optional[str] = None
-    version: str = "1.0.0"
-    auth: int = 0
-
-
-class GatewayUpdate(BaseModel):
-    gateway_name: Optional[str] = None
-    gateway_desc: Optional[str] = None
-    version: Optional[str] = None
-    auth: Optional[int] = None
-    status: Optional[int] = None
-
-
-class GatewayKeyCreate(BaseModel):
-    gateway_id: str
-    rate_limit: int = 600
-    expire_days: int = 365
-    remark: Optional[str] = None
-
-
-class LlmConfigCreate(BaseModel):
-    config_name: str
-    api_type: str  # openai/anthropic
-    base_url: str
-    model_name: str
-    api_key: str  # 明文API Key，后端加密存储
-    description: Optional[str] = None
-
-
-class LlmConfigUpdate(BaseModel):
-    config_name: Optional[str] = None
-    api_type: Optional[str] = None
-    base_url: Optional[str] = None
-    model_name: Optional[str] = None
-    api_key: Optional[str] = None  # 如果提供新的Key，会加密存储
-    description: Optional[str] = None
-    status: Optional[int] = None
-
-
-class GatewayLlmBind(BaseModel):
-    llm_config_ids: List[str]
-
-
-class LlmConfigBindRequest(BaseModel):
-    llm_config_id: str
 
 
 # ============================================
@@ -114,23 +59,19 @@ async def get_gateways(
 ):
     """获取网关列表（基于sys_gateway_permission权限过滤）"""
     try:
-        repository = McpGatewayRepository(db)
+        repository = GatewayRepository(db)
         gateways = await repository.get_all_gateways()
 
-        # 超级管理员可以看到所有网关
-        if "SUPER_ADMIN" in current_user.roles:
-            filtered_gateways = gateways
+        # 基于权限过滤网关列表
+        accessible_ids = await get_accessible_gateway_ids(current_user, db)
+        if accessible_ids is None:
+            filtered_gateways = gateways  # SUPER_ADMIN 可看全部
+        elif accessible_ids:
+            filtered_gateways = [
+                g for g in gateways if g.gateway_id in accessible_ids
+            ]
         else:
-            # 基于 sys_gateway_permission 权限过滤
-            rbac_service = PermissionService(db)
-            accessible_ids = await rbac_service.get_accessible_gateways(current_user.id)
-
-            if accessible_ids:
-                filtered_gateways = [
-                    g for g in gateways if g.gateway_id in accessible_ids
-                ]
-            else:
-                filtered_gateways = []
+            filtered_gateways = []
 
         data = [
             {
@@ -159,7 +100,7 @@ async def create_gateway(
 ):
     """创建网关"""
     try:
-        repository = McpGatewayRepository(db)
+        repository = GatewayRepository(db)
 
         # 检查gateway_id是否已存在
         existing = await repository.get_gateway_by_id(form.gateway_id)
@@ -196,21 +137,15 @@ async def update_gateway(
 ):
     """更新网关"""
     try:
-        repository = McpGatewayRepository(db)
+        repository = GatewayRepository(db)
 
         # 先获取网关信息
         gateway = await repository.get_gateway_by_numeric_id(gateway_id)
         if not gateway:
             return Result.error("NOT_FOUND", "网关不存在")
 
-        # 检查用户对该网关的数据权限（超级管理员跳过）
-        if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
-                current_user.id, gateway.gateway_id, "update"
-            )
-            if not has_perm:
-                return Result.error("FORBIDDEN", "无权限操作此网关")
+        # 检查用户对该网关的数据权限
+        await require_gateway_permission(gateway.gateway_id, "update", current_user, db)
 
         update_data = {k: v for k, v in form.model_dump().items() if v is not None}
         if not update_data:
@@ -234,21 +169,15 @@ async def delete_gateway(
 ):
     """删除网关"""
     try:
-        repository = McpGatewayRepository(db)
+        repository = GatewayRepository(db)
 
         # 先获取网关信息
         gateway = await repository.get_gateway_by_numeric_id(gateway_id)
         if not gateway:
             return Result.error("NOT_FOUND", "网关不存在")
 
-        # 检查用户对该网关的数据权限（超级管理员跳过）
-        if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
-                current_user.id, gateway.gateway_id, "delete"
-            )
-            if not has_perm:
-                return Result.error("FORBIDDEN", "无权限操作此网关")
+        # 检查用户对该网关的数据权限
+        await require_gateway_permission(gateway.gateway_id, "delete", current_user, db)
 
         success = await repository.delete_gateway(gateway_id)
 
@@ -266,10 +195,6 @@ async def delete_gateway(
 # ============================================
 
 
-class GatewayMicroserviceBind(BaseModel):
-    microservice_ids: list[int]
-
-
 @router.get("/gateways/{gateway_id}/microservices")
 async def get_gateway_microservices(
     gateway_id: str,
@@ -279,21 +204,16 @@ async def get_gateway_microservices(
     """获取网关绑定的微服务列表"""
     try:
         # 检查网关级别权限
-        if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
-                current_user.id, gateway_id, "read"
-            )
-            if not has_perm:
-                return Result.error("FORBIDDEN", "无权限访问此网关")
+        await require_gateway_permission(gateway_id, "read", current_user, db)
 
-        repository = McpGatewayRepository(db)
+        repository = GatewayRepository(db)
+        ms_repo = MicroserviceRepository(db)
         bindings = await repository.get_gateway_microservices(gateway_id)
 
         # 获取微服务详情
         microservices = []
         for binding in bindings:
-            ms = await repository.get_microservice_by_id(binding.microservice_id)
+            ms = await ms_repo.get_microservice_by_id(binding.microservice_id)
             if ms:
                 # 获取业务线名称
                 bl_name = None
@@ -328,7 +248,8 @@ async def set_gateway_microservices(
 ):
     """设置网关绑定的微服务（覆盖）"""
     try:
-        repository = McpGatewayRepository(db)
+        repository = GatewayRepository(db)
+        ms_repo = MicroserviceRepository(db)
 
         # 验证网关存在
         gateway = await repository.get_gateway_by_id(gateway_id)
@@ -336,17 +257,11 @@ async def set_gateway_microservices(
             return Result.error("NOT_FOUND", "网关不存在")
 
         # 检查网关级别权限
-        if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
-                current_user.id, gateway_id, "update"
-            )
-            if not has_perm:
-                return Result.error("FORBIDDEN", "无权限操作此网关")
+        await require_gateway_permission(gateway_id, "update", current_user, db)
 
         # 验证微服务存在
         for ms_id in form.microservice_ids:
-            ms = await repository.get_microservice_by_id(ms_id)
+            ms = await ms_repo.get_microservice_by_id(ms_id)
             if not ms:
                 return Result.error("NOT_FOUND", f"微服务 {ms_id} 不存在")
 
@@ -372,13 +287,12 @@ async def get_gateway_keys(
 ):
     """获取网关Key列表（脱敏，按权限过滤）"""
     try:
-        repository = McpGatewayRepository(db)
+        repository = AuthRepository(db)
         keys = await repository.get_all_gateway_keys()
 
-        # 超级管理员可查看所有
-        if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            accessible_ids = await rbac_service.get_accessible_gateways(current_user.id)
+        # 按权限过滤
+        accessible_ids = await get_accessible_gateway_ids(current_user, db)
+        if accessible_ids is not None:
             keys = [k for k in keys if k.gateway_id in accessible_ids]
 
         data = [
@@ -410,15 +324,9 @@ async def create_gateway_key(
     """创建网关Key（返回完整Key，仅此一次）"""
     try:
         # 检查网关级别权限
-        if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
-                current_user.id, form.gateway_id, "create"
-            )
-            if not has_perm:
-                return Result.error("FORBIDDEN", "无权限操作此网关")
+        await require_gateway_permission(form.gateway_id, "create", current_user, db)
 
-        repository = McpGatewayRepository(db)
+        repository = AuthRepository(db)
 
         # 生成 API Key
         key_id, full_api_key = generate_api_key()
@@ -465,7 +373,7 @@ async def delete_gateway_key(
 ):
     """删除网关Key"""
     try:
-        repository = McpGatewayRepository(db)
+        repository = AuthRepository(db)
 
         # 先获取Key信息以检查权限
         key = await repository.get_gateway_key_by_id(key_id)
@@ -473,13 +381,7 @@ async def delete_gateway_key(
             return Result.error("NOT_FOUND", "Key不存在")
 
         # 检查网关级别权限
-        if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
-                current_user.id, key.gateway_id, "delete"
-            )
-            if not has_perm:
-                return Result.error("FORBIDDEN", "无权限操作此网关的Key")
+        await require_gateway_permission(key.gateway_id, "delete", current_user, db)
 
         success = await repository.delete_gateway_key(key_id)
 
@@ -511,7 +413,7 @@ async def get_llm_configs(
 ):
     """获取LLM配置列表"""
     try:
-        repository = McpGatewayRepository(db)
+        repository = LlmConfigRepository(db)
         configs = await repository.get_all_llm_configs()
 
         data = [
@@ -542,7 +444,7 @@ async def create_llm_config(
 ):
     """创建LLM配置"""
     try:
-        repository = McpGatewayRepository(db)
+        repository = LlmConfigRepository(db)
 
         # 生成配置ID
         config_id = _generate_config_id()
@@ -639,13 +541,7 @@ async def get_gateway_llms(
             return Result.error("NOT_FOUND", "网关不存在")
 
         # 检查网关级别权限
-        if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
-                current_user.id, gateway_id, "read"
-            )
-            if not has_perm:
-                return Result.error("FORBIDDEN", "无权限访问此网关")
+        await require_gateway_permission(gateway_id, "read", current_user, db)
 
         llm_configs = await repository.get_gateway_llm_configs(gateway_id)
 
@@ -685,13 +581,7 @@ async def bind_llm_to_gateway(
             return Result.error("NOT_FOUND", "网关不存在")
 
         # 检查网关级别权限
-        if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
-                current_user.id, gateway_id, "update"
-            )
-            if not has_perm:
-                return Result.error("FORBIDDEN", "无权限操作此网关")
+        await require_gateway_permission(gateway_id, "update", current_user, db)
 
         # 验证LLM配置存在
         llm_config = await repository.get_llm_config_by_config_id(form.llm_config_id)
@@ -728,16 +618,10 @@ async def unbind_llm_from_gateway(
     """解绑LLM配置"""
     try:
         # 检查网关级别权限
-        if "SUPER_ADMIN" not in current_user.roles:
-            rbac_service = PermissionService(db)
-            has_perm = await rbac_service.check_gateway_permission(
-                current_user.id, gateway_id, "update"
-            )
-            if not has_perm:
-                return Result.error("FORBIDDEN", "无权限操作此网关")
+        await require_gateway_permission(gateway_id, "update", current_user, db)
 
         repository = McpGatewayRepository(db)
-        success = await repository.unbind_llm_from_gateway(gateway_id, llm_config_id)
+        await repository.unbind_llm_from_gateway(gateway_id, llm_config_id)
 
         logger.info(f"解绑LLM: gateway_id={gateway_id}, llm_config_id={llm_config_id}")
         return Result.success(

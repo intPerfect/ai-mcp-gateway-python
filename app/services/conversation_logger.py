@@ -6,7 +6,6 @@ Conversation Logger Service - 对话日志服务
 
 import json
 import logging
-import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field, asdict

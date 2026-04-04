@@ -4,18 +4,17 @@ User Router - 用户管理API路由
 """
 
 import logging
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from typing import List
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.connection import get_db_session
 from app.infrastructure.database.repository import RbacRepository
-from app.infrastructure.database.models import SysUser, SysRole
+from app.infrastructure.database.models import SysUser
 from app.domain.rbac import UserInfo, UserCreate, UserUpdate, BusinessLineInfo
 from app.domain.rbac.service import hash_password
 from app.utils.result import Result
 from app.api.routers.auth import (
-    require_auth,
     require_permission,
     UserInfo as CurrentUser,
 )
@@ -124,10 +123,6 @@ async def list_users(
     if not is_super_admin(current_user):
         managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
         if managed_bl_ids:
-            # 获取所有业务线
-            business_lines = await repo.get_all_business_lines()
-            bl_map = {bl.id: bl.line_name for bl in business_lines}
-
             # 筛选属于管理业务线的用户
             filtered_users = []
             for user in users:

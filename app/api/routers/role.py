@@ -4,10 +4,9 @@ Role Router - 角色管理API路由
 """
 
 import logging
-from typing import List, Optional
+from typing import List
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
 
 from app.infrastructure.database.connection import get_db_session
 from app.infrastructure.database.repository import RbacRepository, McpGatewayRepository
@@ -16,7 +15,6 @@ from app.infrastructure.cache.redis_client import get_redis, PermissionCache
 from app.domain.rbac import RoleInfo, RoleCreate, RoleUpdate, DataPermissionSet
 from app.utils.result import Result
 from app.api.routers.auth import (
-    require_auth,
     require_permission,
     UserInfo as CurrentUser,
 )
@@ -24,16 +22,6 @@ from app.api.routers.auth import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/roles", tags=["角色管理"])
-
-
-# Pydantic models for request/response
-class DataPermissionRequest(BaseModel):
-    """数据权限请求"""
-
-    business_lines: List[str] = []
-    gateway_ids: List[str] = []
-    microservice_ids: List[int] = []
-    chat_access: bool = True
 
 
 def role_to_info(
