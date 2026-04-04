@@ -16,8 +16,8 @@ DELETE FROM mcp_gateway_microservice;
 DELETE FROM mcp_gateway_auth;
 DELETE FROM mcp_gateway;
 DELETE FROM mcp_microservice;
-DELETE FROM mcp_llm_key;
-DELETE FROM mcp_llm;
+DELETE FROM mcp_gateway_llm;
+DELETE FROM mcp_llm_config;
 DELETE FROM sys_gateway_permission;
 DELETE FROM sys_role_permission;
 DELETE FROM sys_user_role;
@@ -33,25 +33,28 @@ DELETE FROM sys_business_line;
 -- =====================================================
 
 -- 网关配置
-INSERT INTO mcp_gateway (gateway_id, gateway_name, gateway_desc, version, auth, business_line_id, status) VALUES
-('gateway_001', '商品服务网关', 'Product Service MCP Gateway', '1.0.0', 0, 2, 1),
-('gateway_002', 'OA服务网关', 'OA Service MCP Gateway', '1.0.0', 0, 1, 1);
+INSERT INTO mcp_gateway (gateway_id, gateway_name, gateway_desc, version, business_line_id, status) VALUES
+('gateway_001', '商品服务网关', 'Product Service MCP Gateway', '1.0.0', 2, 1),
+('gateway_002', 'OA服务网关', 'OA Service MCP Gateway', '1.0.0', 1, 1);
 
 -- OA 网关 API Key
 INSERT INTO mcp_gateway_auth (gateway_id, key_id, api_key_hash, key_preview, rate_limit, expire_time, remark, status) VALUES
-('gateway_002', 'oakey001', '$2b$12$9lHqeqRUeFzcAs9ixbFqwOsYYwoQakSuwZLdGfbYKelCGShl0X6ba', 'sk-oakey00...WxYz', 360000, '2099-12-31 23:59:59', 'OA默认测试Key', 1);
+('gateway_002', 'oakey001', '$2b$12$9lHqeqRUeFzcAs9ixbFqwOsYYwoQakSuwZLdGfbYKelCGShl0X6ba', 'sk-oakey00...WxYz', 600, '2099-12-31 23:59:59', 'OA默认测试Key', 1);
 
 -- 默认 API Key (仅供测试使用)
 -- API Key: sk-defaultkey001:Xy7zA1b2C3d4E5f6G7h8I9j0KlMnOpQrStUvWxYz
 INSERT INTO mcp_gateway_auth (gateway_id, key_id, api_key_hash, key_preview, rate_limit, expire_time, remark, status) VALUES
-('gateway_001', 'defaultkey001', '$2b$12$9lHqeqRUeFzcAs9ixbFqwOsYYwoQakSuwZLdGfbYKelCGShl0X6ba', 'sk-defaultke...WxYz', 360000, '2099-12-31 23:59:59', '默认测试Key', 1);
+('gateway_001', 'defaultkey001', '$2b$12$9lHqeqRUeFzcAs9ixbFqwOsYYwoQakSuwZLdGfbYKelCGShl0X6ba', 'sk-defaultke...WxYz', 600, '2099-12-31 23:59:59', '默认测试Key', 1);
 
--- LLM 配置
-INSERT INTO mcp_llm (llm_id, llm_name, llm_type, base_url, default_model, description, status) VALUES
-('qwen', '通义千问', 'qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus', '阿里云通义千问大模型', 1),
-('deepseek', 'DeepSeek', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-chat', 'DeepSeek大模型', 1),
-('minimax', 'MiniMax', 'minimax', 'https://api.minimax.chat/v1', 'abab6.5s-chat', 'MiniMax大模型', 1),
-('openai', 'OpenAI', 'openai', 'https://api.openai.com/v1', 'gpt-4o', 'OpenAI GPT模型', 1);
+-- LLM 配置 (v10.0 统一)
+-- API Key 直接存储（演示用，生产环境建议加密）
+INSERT INTO mcp_llm_config (config_id, config_name, api_type, base_url, model_name, api_key, description, status) VALUES
+('minimax_default', 'MiniMax默认', 'anthropic', 'https://api.minimaxi.com/anthropic', 'MiniMax-M2.5', 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJHcm91cE5hbWUiOiLnmb7ono3kupHliJsiLCJVc2VyTmFtZSI6IueZvuiejeS6keWImyIsIkFjY291bnQiOiIiLCJTdWJqZWN0SUQiOiIxOTk4NjY2Nzg0MTg5NzE0Njk5IiwiUGhvbmUiOiIxOTUxMTk4MTY4OSIsIkdyb3VwSUQiOiIxOTk4NjY2Nzg0MTgxMzI2MDkxIiwiUGFnZU5hbWUiOiIiLCJNYWlsIjoiIiwiQ3JlYXRlVGltZSI6IjIwMjUtMTItMTAgMjE6MzI6MTYiLCJUb2tlblR5cGUiOjQsImlzcyI6Im1pbmltYXgifQ.u5vB41nODwjoj-a728IeKgtdnoL7AC0rJbw3Uv8iXA6CVqXQ3SY5RCTo87yAzAeva8prR4YcBQ-nIG5mtXYd_jemI-mjA909hYN3yvWsjuD4m_3U2SqoDY5E6vV6gyGPzQlnB0OkzOKJCwQbb6FUfcymWTSiAtw2k8DgfCeQLJLUMKmxOjHYOontut_gujCxY57wU-8h0p4PWkS74hLnritLO3oIBq6ZNmf1d3uC4pw-jVCflSlymm16luObc-DeohNc83fAOtMPSJ76mi_bdAcoIgCOyAP3VUan53QyLHwzcq-i8YI-TuxkAvH3slauNsHAfUWNhlqJouRXdFwsHg', 'MiniMax大模型(Anthropic兼容接口)', 1);
+
+-- 网关-LLM绑定关系 (v10.0)
+INSERT INTO mcp_gateway_llm (gateway_id, llm_config_id, status) VALUES
+('gateway_001', 'minimax_default', 1),
+('gateway_002', 'minimax_default', 1);
 
 -- =====================================================
 -- 3. RBAC 权限系统数据
@@ -117,8 +120,8 @@ INSERT INTO sys_role (id, role_code, role_name, description, business_line_id, i
 -- product_admin 密码: 123456
 INSERT INTO sys_user (id, username, password_hash, real_name, email, status) VALUES
 (1, 'admin', '$2b$12$dCUfQCPNRi/QAuDMIsyDYe0ID5h3BhCoYvUlnfvFf7XPUFGvy2682', '系统管理员', 'admin@example.com', 1),
-(2, 'oa_admin', '$2b$12$IVhpPa5ObRN7rtT.b3E3JeEJ4WgMZehX/lofBZr7OjOtlkKuMMo0K', 'OA管理员', 'oa@example.com', 1),
-(3, 'product_admin', '$2b$12$IVhpPa5ObRN7rtT.b3E3JeEJ4WgMZehX/lofBZr7OjOtlkKuMMo0K', '商品管理员', 'product@example.com', 1);
+(2, 'oa_admin', '$2b$12$YW1lGkiyAMwcg.lOWwi0EubeZpLMO4cpyLMAPTyOZoUdGIkCw.Cpa', 'OA管理员', 'oa@example.com', 1),
+(3, 'product_admin', '$2b$12$YW1lGkiyAMwcg.lOWwi0EubeZpLMO4cpyLMAPTyOZoUdGIkCw.Cpa', '商品管理员', 'product@example.com', 1);
 
 -- 用户角色关联
 INSERT INTO sys_user_role (user_id, role_id) VALUES
@@ -714,3 +717,5 @@ SELECT '总业务线数:' AS '', COUNT(*) FROM sys_business_line;
 SELECT '微服务数量:' AS '', COUNT(*) FROM mcp_microservice;
 SELECT '工具数量:' AS '', COUNT(*) FROM mcp_gateway_tool WHERE gateway_id = 'gateway_001';
 SELECT '网关-微服务绑定数:' AS '', COUNT(*) FROM mcp_gateway_microservice;
+SELECT 'LLM配置数:' AS '', COUNT(*) FROM mcp_llm_config;
+SELECT '网关-LLM绑定数:' AS '', COUNT(*) FROM mcp_gateway_llm;

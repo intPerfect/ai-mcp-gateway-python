@@ -1,10 +1,11 @@
--- AI MCP Gateway Database Schema v9.0
+-- AI MCP Gateway Database Schema v10.0
 -- MySQL 8.0+
 -- v5.0 更新：网关管理功能升级，新增LLM配置表
 -- v6.0 更新：新增RBAC权限系统，支持组织架构管理
 -- v7.0 更新：网关-微服务绑定关系，网关权限配置
 -- v8.0 更新：业务线权限分离，用户-业务线关联
 -- v9.0 更新：移除部门/团队概念，统一为业务线架构
+-- v10.0 更新：统一LLM配置表，合并API Key，支持OpenAI/Anthropic兼容
 
 CREATE DATABASE IF NOT EXISTS `ai_mcp_gateway_v2` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE `ai_mcp_gateway_v2`;
@@ -16,9 +17,9 @@ DROP TABLE IF EXISTS `mcp_protocol_mapping`;
 DROP TABLE IF EXISTS `mcp_protocol_http`;
 DROP TABLE IF EXISTS `mcp_gateway_tool`;
 DROP TABLE IF EXISTS `mcp_gateway_microservice`;
+DROP TABLE IF EXISTS `mcp_gateway_llm`;
 DROP TABLE IF EXISTS `mcp_microservice`;
-DROP TABLE IF EXISTS `mcp_llm_key`;
-DROP TABLE IF EXISTS `mcp_llm`;
+DROP TABLE IF EXISTS `mcp_llm_config`;
 DROP TABLE IF EXISTS `mcp_gateway_auth`;
 DROP TABLE IF EXISTS `mcp_gateway`;
 
@@ -47,7 +48,6 @@ CREATE TABLE `mcp_gateway` (
   `gateway_name` varchar(128) NOT NULL COMMENT '网关名称',
   `gateway_desc` varchar(512) DEFAULT NULL COMMENT '网关描述',
   `version` varchar(16) DEFAULT '1.0.0' COMMENT '版本号',
-  `auth` tinyint(1) DEFAULT 0 COMMENT '是否启用认证: 0-否 1-是',
   `business_line_id` bigint DEFAULT NULL COMMENT '所属业务线ID',
   `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -67,7 +67,7 @@ CREATE TABLE `mcp_gateway_auth` (
   `key_id` varchar(32) NOT NULL COMMENT 'API Key唯一标识，用于索引查询',
   `api_key_hash` varchar(128) NOT NULL COMMENT 'bcrypt加盐哈希后的API Key',
   `key_preview` varchar(32) DEFAULT NULL COMMENT 'Key前缀预览（脱敏显示）',
-  `rate_limit` int DEFAULT 1000 COMMENT '速率限制(次/小时)',
+  `rate_limit` int DEFAULT 600 COMMENT '调用次数限制(次/5小时)',
   `expire_time` datetime DEFAULT NULL COMMENT '过期时间',
   `remark` varchar(256) DEFAULT NULL COMMENT '备注',
   `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
@@ -96,42 +96,40 @@ CREATE TABLE `mcp_gateway_microservice` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网关-微服务绑定关系';
 
 -- ============================================
--- LLM 配置表
+-- LLM 配置表 (统一)
 -- ============================================
-CREATE TABLE `mcp_llm` (
+CREATE TABLE `mcp_llm_config` (
   `id` bigint NOT NULL AUTO_INCREMENT,
-  `llm_id` varchar(64) NOT NULL COMMENT 'LLM唯一标识',
-  `llm_name` varchar(128) NOT NULL COMMENT 'LLM名称(如通义千问、DeepSeek)',
-  `llm_type` varchar(32) NOT NULL COMMENT '类型: qwen/deepseek/minimax/openai',
+  `config_id` varchar(64) NOT NULL COMMENT '配置唯一标识',
+  `config_name` varchar(128) NOT NULL COMMENT '配置名称(自定义)',
+  `api_type` varchar(16) NOT NULL COMMENT 'API类型: openai/anthropic',
   `base_url` varchar(512) NOT NULL COMMENT 'API基础URL',
-  `default_model` varchar(128) DEFAULT NULL COMMENT '默认模型',
+  `model_name` varchar(128) NOT NULL COMMENT '模型名称',
+  `api_key` text NOT NULL COMMENT 'API Key(AES加密存储或JWT Token)',
   `description` varchar(512) DEFAULT NULL COMMENT '描述',
   `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_llm_id` (`llm_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='LLM服务配置';
+  UNIQUE KEY `uk_config_id` (`config_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='LLM配置(统一)';
 
 -- ============================================
--- LLM Key 表
+-- 网关-LLM绑定关系表
 -- ============================================
-CREATE TABLE `mcp_llm_key` (
+CREATE TABLE `mcp_gateway_llm` (
   `id` bigint NOT NULL AUTO_INCREMENT,
-  `llm_id` varchar(64) NOT NULL COMMENT '关联LLM ID',
-  `key_id` varchar(32) NOT NULL COMMENT 'Key唯一标识',
-  `api_key_hash` varchar(128) NOT NULL COMMENT 'bcrypt哈希后的Key',
-  `key_preview` varchar(32) DEFAULT NULL COMMENT 'Key前缀预览（脱敏显示）',
-  `rate_limit` int DEFAULT 1000 COMMENT '速率限制(次/小时)',
-  `expire_time` datetime DEFAULT NULL COMMENT '过期时间',
-  `remark` varchar(256) DEFAULT NULL COMMENT '备注',
+  `gateway_id` varchar(64) NOT NULL COMMENT '网关ID',
+  `llm_config_id` varchar(64) NOT NULL COMMENT 'LLM配置ID',
+  `bind_time` datetime DEFAULT CURRENT_TIMESTAMP,
   `status` tinyint(1) NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_key_id` (`key_id`),
-  KEY `idx_llm_id` (`llm_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='LLM API Key配置';
+  UNIQUE KEY `uk_gateway_llm` (`gateway_id`, `llm_config_id`),
+  KEY `idx_gateway_id` (`gateway_id`),
+  KEY `idx_llm_config_id` (`llm_config_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网关-LLM绑定关系';
 
 -- ============================================
 -- MCP Gateway 工具表
@@ -380,3 +378,20 @@ CREATE TABLE `sys_login_log` (
   KEY `idx_user_id` (`user_id`),
   KEY `idx_login_time` (`login_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登录日志表';
+
+-- ============================================
+-- 模型调用使用记录表
+-- ============================================
+CREATE TABLE `mcp_usage_log` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `gateway_id` varchar(64) NOT NULL COMMENT '网关ID',
+  `key_id` varchar(32) NOT NULL COMMENT 'API Key标识',
+  `session_id` varchar(64) DEFAULT NULL COMMENT '会话ID',
+  `call_type` varchar(16) NOT NULL COMMENT '调用类型: llm/tool',
+  `call_detail` varchar(256) DEFAULT NULL COMMENT '调用详情(模型名或工具名)',
+  `call_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '调用时间',
+  `success` tinyint(1) DEFAULT 1 COMMENT '是否成功',
+  PRIMARY KEY (`id`),
+  KEY `idx_gateway_key_time` (`gateway_id`, `key_id`, `call_time`),
+  KEY `idx_call_time` (`call_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='模型调用使用记录';

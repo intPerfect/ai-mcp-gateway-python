@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-LLM Service - 大模型调用服务 (Anthropic兼容)
+LLM Service - 大模型调用服务 (支持OpenAI和Anthropic兼容)
 """
 
 import json
 import logging
 import asyncio
+import secrets
 from typing import List, Dict, Any, Optional, AsyncGenerator
 import anthropic
+from openai import OpenAI
 from app.config import get_settings
 from app.services.mcp_tool_registry import mcp_tool_registry
 
@@ -16,11 +18,28 @@ settings = get_settings()
 
 
 class LLMService:
-    """LLM服务 (Anthropic API)"""
+    """LLM服务 - 支持OpenAI和Anthropic两种API类型"""
 
-    def __init__(self):
-        self.base_url = "https://api.minimaxi.com/anthropic"
-        self.model = settings.llm_model
+    def __init__(
+        self,
+        api_type: str = "anthropic",
+        base_url: str = None,
+        model_name: str = None,
+        api_key: str = None
+    ):
+        """
+        初始化LLM服务
+
+        Args:
+            api_type: API类型 (openai/anthropic)
+            base_url: API基础URL
+            model_name: 模型名称
+            api_key: API Key
+        """
+        self.api_type = api_type.lower()
+        self.base_url = base_url or settings.llm_api_base_url
+        self.model = model_name or settings.llm_model
+        self.api_key = api_key
 
     def get_tools(self) -> List[Dict[str, Any]]:
         """获取所有工具定义（从mcp_tool_registry获取）"""
@@ -113,35 +132,113 @@ class LLMService:
 
         return system_prompt, anthropic_messages
 
+    def _convert_to_openai_messages(
+        self,
+        messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        转换消息为 OpenAI API 格式
+
+        Args:
+            messages: 原始消息列表
+
+        Returns:
+            List: openai_messages
+        """
+        openai_messages = []
+
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+
+            if role == "system":
+                openai_messages.append({"role": "system", "content": content})
+            elif role == "user":
+                if isinstance(content, str):
+                    openai_messages.append({"role": "user", "content": content})
+                else:
+                    # 处理多模态内容
+                    openai_messages.append({"role": "user", "content": content})
+            elif role == "assistant":
+                if isinstance(content, str):
+                    openai_messages.append({"role": "assistant", "content": content})
+                else:
+                    # 处理工具调用等内容
+                    assistant_msg = {"role": "assistant", "content": ""}
+                    tool_calls = []
+                    for block in content:
+                        if isinstance(block, dict):
+                            block_type = block.get("type")
+                            if block_type == "text":
+                                assistant_msg["content"] = block.get("text", "")
+                            elif block_type == "tool_use":
+                                tool_calls.append({
+                                    "id": block.get("id", ""),
+                                    "type": "function",
+                                    "function": {
+                                        "name": block.get("name", ""),
+                                        "arguments": json.dumps(block.get("input", {}))
+                                    }
+                                })
+                    if tool_calls:
+                        assistant_msg["tool_calls"] = tool_calls
+                    openai_messages.append(assistant_msg)
+
+        return openai_messages
+
+    def _convert_tools_to_openai_format(self, tools: List[Dict]) -> List[Dict]:
+        """将Anthropic格式的工具转换为OpenAI格式"""
+        openai_tools = []
+        for tool in tools:
+            if tool.get("type") == "function":
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("input_schema", {})
+                    }
+                })
+        return openai_tools
+
     async def chat(
         self,
         messages: List[Dict[str, Any]],
         tools_enabled: bool = True,
         api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """调用LLM API (Anthropic兼容)"""
-        try:
-            # 使用传入的API Key或配置中的默认Key
-            effective_api_key = api_key or settings.llm_api_key
-            if not effective_api_key:
-                return {
-                    "error": "LLM API Key未配置",
-                    "tool_calls": [],
-                    "content_blocks": [],
-                }
+        """调用LLM API"""
+        effective_api_key = api_key or self.api_key or settings.llm_api_key
+        if not effective_api_key:
+            return {
+                "error": "LLM API Key未配置",
+                "tool_calls": [],
+                "content_blocks": [],
+            }
 
+        if self.api_type == "openai":
+            return await self._chat_openai(messages, tools_enabled, effective_api_key)
+        else:
+            return await self._chat_anthropic(messages, tools_enabled, effective_api_key)
+
+    async def _chat_anthropic(
+        self,
+        messages: List[Dict[str, Any]],
+        tools_enabled: bool,
+        api_key: str
+    ) -> Dict[str, Any]:
+        """调用Anthropic API"""
+        try:
             client = anthropic.Anthropic(
                 base_url=self.base_url,
-                api_key=effective_api_key,
+                api_key=api_key,
             )
 
-            # 转换消息格式
             system_prompt, anthropic_messages = self._convert_to_anthropic_messages(messages)
 
-            # 构建请求
             request_kwargs = {
                 "model": self.model,
-                "max_tokens": 1024,
+                "max_tokens": 4096,
                 "messages": anthropic_messages,
                 "temperature": 1.0,
             }
@@ -152,10 +249,8 @@ class LLMService:
             if tools_enabled:
                 request_kwargs["tools"] = self.get_tools()
 
-            # 调用API
             response = await asyncio.to_thread(client.messages.create, **request_kwargs)
 
-            # 解析响应
             result_content = ""
             result_content_blocks = []
             tool_calls = []
@@ -184,7 +279,75 @@ class LLMService:
             }
 
         except Exception as e:
-            logger.error(f"LLM调用异常: {str(e)}")
+            logger.error(f"Anthropic API调用异常: {str(e)}")
+            return {
+                "content": f"LLM调用异常: {str(e)}",
+                "error": str(e),
+                "tool_calls": [],
+                "content_blocks": [],
+            }
+
+    async def _chat_openai(
+        self,
+        messages: List[Dict[str, Any]],
+        tools_enabled: bool,
+        api_key: str
+    ) -> Dict[str, Any]:
+        """调用OpenAI兼容API"""
+        try:
+            client = OpenAI(
+                base_url=self.base_url,
+                api_key=api_key,
+            )
+
+            openai_messages = self._convert_to_openai_messages(messages)
+
+            request_kwargs = {
+                "model": self.model,
+                "messages": openai_messages,
+                "temperature": 1.0,
+            }
+
+            if tools_enabled:
+                tools = self.get_tools()
+                if tools:
+                    request_kwargs["tools"] = self._convert_tools_to_openai_format(tools)
+
+            response = await asyncio.to_thread(client.chat.completions.create, **request_kwargs)
+
+            result_content = ""
+            result_content_blocks = []
+            tool_calls = []
+
+            choice = response.choices[0]
+            message = choice.message
+
+            if message.content:
+                result_content = message.content
+                result_content_blocks.append({"type": "text", "text": message.content})
+
+            if message.tool_calls:
+                for tc in message.tool_calls:
+                    tool_calls.append({
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "input": json.loads(tc.function.arguments) if tc.function.arguments else {}
+                    })
+                    result_content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "input": json.loads(tc.function.arguments) if tc.function.arguments else {}
+                    })
+
+            return {
+                "content": result_content,
+                "content_blocks": result_content_blocks,
+                "tool_calls": tool_calls,
+            }
+
+        except Exception as e:
+            logger.error(f"OpenAI API调用异常: {str(e)}")
             return {
                 "content": f"LLM调用异常: {str(e)}",
                 "error": str(e),
@@ -202,24 +365,37 @@ class LLMService:
         tools_enabled: bool = True,
         api_key: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """流式调用LLM API (Anthropic兼容)"""
-        try:
-            effective_api_key = api_key or settings.llm_api_key
-            if not effective_api_key:
-                yield {"type": "error", "error": "LLM API Key未配置"}
-                return
+        """流式调用LLM API"""
+        effective_api_key = api_key or self.api_key or settings.llm_api_key
+        if not effective_api_key:
+            yield {"type": "error", "error": "LLM API Key未配置"}
+            return
 
+        if self.api_type == "openai":
+            async for event in self._chat_stream_openai(messages, tools_enabled, effective_api_key):
+                yield event
+        else:
+            async for event in self._chat_stream_anthropic(messages, tools_enabled, effective_api_key):
+                yield event
+
+    async def _chat_stream_anthropic(
+        self,
+        messages: List[Dict[str, Any]],
+        tools_enabled: bool,
+        api_key: str
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """流式调用Anthropic API"""
+        try:
             client = anthropic.Anthropic(
                 base_url=self.base_url,
-                api_key=effective_api_key,
+                api_key=api_key,
             )
 
-            # 转换消息格式
             system_prompt, anthropic_messages = self._convert_to_anthropic_messages(messages)
 
             request_kwargs = {
                 "model": self.model,
-                "max_tokens": 1024,
+                "max_tokens": 4096,
                 "messages": anthropic_messages,
                 "temperature": 1.0,
             }
@@ -233,7 +409,6 @@ class LLMService:
             else:
                 logger.info("工具调用已禁用")
 
-            # 在线程中运行同步流，避免阻塞事件循环
             import queue
             import threading
 
@@ -255,7 +430,7 @@ class LLMService:
             loop = asyncio.get_event_loop()
             current_block_type = None
             accumulated_text = ""
-            text_block_yielded_len = 0  # tracks how many chars of accumulated_text have been sent as text_delta
+            text_block_yielded_len = 0
             tool_calls = []
             content_blocks = []
             final_message = None
@@ -289,12 +464,9 @@ class LLMService:
                             current_block_type = getattr(content_block, "type", None)
                             if current_block_type == "text":
                                 accumulated_text = ""
-                                text_block_yielded_len = 0  # reset for each new text block
+                                text_block_yielded_len = 0
                             elif current_block_type == "thinking":
-                                # thinking 块开始
-                                logger.info(
-                                    "[LLM Event] content_block_start - thinking block started"
-                                )
+                                logger.info("[LLM Event] content_block_start - thinking block started")
                             elif current_block_type == "tool_use":
                                 yield {
                                     "type": "tool_use_start",
@@ -309,48 +481,29 @@ class LLMService:
                             if delta_type == "text_delta":
                                 text = getattr(delta, "text", "")
                                 accumulated_text += text
-                                logger.debug(f"收到文本增量: {text[:50]}...")
-                                # 避免将 XML 工具调用标签（<minimax:tool_call>）的任何部分发送给前端
-                                # 使用 '<minimax' 作为更早的检测点，防止分块传输时的标签截断问题
                                 if "<minimax:tool_call>" not in accumulated_text:
                                     xml_start_idx = accumulated_text.find("<minimax")
                                     if xml_start_idx == -1:
-                                        # 无 XML 标记，安全发送所有未发送的文本
                                         unsent = accumulated_text[text_block_yielded_len:]
                                         if unsent:
                                             yield {"type": "text_delta", "text": unsent}
                                             text_block_yielded_len = len(accumulated_text)
                                     else:
-                                        # 发现潜在 XML 起始位置，只发送其前面的安全文本
                                         safe_text = accumulated_text[text_block_yielded_len:xml_start_idx]
                                         if safe_text:
                                             yield {"type": "text_delta", "text": safe_text}
                                             text_block_yielded_len = xml_start_idx
-                                        # xml_start_idx 之后的内容暂不发送，等待判断是否为 XML 标签
-                                # 如果 accumulated_text 已包含完整 XML 标签，不再发送新增量
                             elif delta_type == "thinking_delta":
                                 thinking_text = getattr(delta, "thinking", "")
-                                logger.info(
-                                    f"[LLM Event] thinking_delta: {thinking_text[:100]}..."
-                                )
-                                # 发送 thinking 增量到前端
                                 yield {
                                     "type": "thinking_delta",
                                     "thinking": thinking_text,
                                 }
-                            elif delta_type == "tool_use":
-                                logger.info(f"收到原生 tool_use 增量")
-                            else:
-                                logger.debug(f"收到其他类型增量: {delta_type}")
 
                     elif event_type == "content_block_stop":
                         if current_block_type == "text":
-                            # 解析 minimax XML 工具调用（MiniMax 不支持原生 tool_use，用 XML 代替）
-                            clean_text, xml_tool_calls = self._parse_minimax_tool_calls(
-                                accumulated_text
-                            )
+                            clean_text, xml_tool_calls = self._parse_minimax_tool_calls(accumulated_text)
                             if xml_tool_calls:
-                                # 有 XML 工具调用，用解析出的工具调用替代
                                 for tc in xml_tool_calls:
                                     tool_calls.append(tc)
                                     content_blocks.append(
@@ -361,7 +514,6 @@ class LLMService:
                                             "input": tc["input"],
                                         }
                                     )
-                                    # 发送工具调用开始事件（为每个解析出的工具调用）
                                     yield {
                                         "type": "tool_use_start",
                                         "id": tc["id"],
@@ -369,41 +521,28 @@ class LLMService:
                                     }
                                     yield {"type": "tool_use_stop"}
                                 if clean_text:
-                                    content_blocks.append(
-                                        {"type": "text", "text": clean_text}
-                                    )
+                                    content_blocks.append({"type": "text", "text": clean_text})
                                     yield {"type": "text_stop", "text": clean_text}
                                 else:
                                     yield {"type": "text_stop", "text": ""}
                             else:
-                                # 无 XML 工具调用：发送所有尚未发送的剩余文本（如有因 '<minimax' 误判而缓冲的部分）
                                 remaining = accumulated_text[text_block_yielded_len:]
                                 if remaining:
                                     yield {"type": "text_delta", "text": remaining}
                                     text_block_yielded_len = len(accumulated_text)
-                                content_blocks.append(
-                                    {"type": "text", "text": accumulated_text}
-                                )
+                                content_blocks.append({"type": "text", "text": accumulated_text})
                                 yield {"type": "text_stop", "text": accumulated_text}
                         elif current_block_type == "tool_use":
                             yield {"type": "tool_use_stop"}
 
-            # 解析最终消息的所有内容块（重要！）
-            # 统一从 final_message 解析，避免与 content_block_stop 重复
             if final_message:
-                logger.info(
-                    f"流结束，最终消息包含 {len(final_message.content)} 个内容块"
-                )
-                # 清空并重新从 final_message 构建
+                logger.info(f"流结束，最终消息包含 {len(final_message.content)} 个内容块")
                 content_blocks = []
-                tool_calls = []  # 也重新构建 tool_calls
+                tool_calls = []
                 
                 for block in final_message.content:
                     block_type = block.type
-                    logger.info(f"  内容块类型: {block_type}")
-                    
                     if block_type == "tool_use":
-                        logger.info(f"  发现原生 tool_use: {block.name}")
                         tool_calls.append(
                             {"id": block.id, "name": block.name, "input": block.input}
                         )
@@ -416,33 +555,17 @@ class LLMService:
                             }
                         )
                     elif block_type == "text":
-                        # 添加文本块
                         text_content = getattr(block, "text", "")
-                        content_blocks.append({
-                            "type": "text",
-                            "text": text_content
-                        })
-                        # 更新 accumulated_text
+                        content_blocks.append({"type": "text", "text": text_content})
                         if text_content:
                             accumulated_text = text_content
                     elif block_type == "thinking":
-                        # 添加思考块
                         thinking_content = getattr(block, "thinking", "")
-                        content_blocks.append({
-                            "type": "thinking",
-                            "thinking": thinking_content
-                        })
+                        content_blocks.append({"type": "thinking", "thinking": thinking_content})
 
-            logger.info(
-                f"[LLM Event] stream_end - tool_calls: {[tc.get('name') for tc in tool_calls]}, content_blocks: {len(content_blocks)}, accumulated_text: {len(accumulated_text)}, yielded: {text_block_yielded_len}"
-            )
-            
-            # 如果 accumulated_text 有内容但之前没有发送过（MiniMax 可能只在 final_message 中返回文本）
-            # 需要在 stream_end 之前发送 text_delta
             if accumulated_text and text_block_yielded_len < len(accumulated_text):
                 remaining_text = accumulated_text[text_block_yielded_len:]
                 if remaining_text:
-                    logger.info(f"[LLM Event] 发送剩余文本: {len(remaining_text)} 字符")
                     yield {"type": "text_delta", "text": remaining_text}
             
             yield {
@@ -453,7 +576,100 @@ class LLMService:
             }
 
         except Exception as e:
-            logger.error(f"LLM流式调用异常: {str(e)}")
+            logger.error(f"Anthropic流式调用异常: {str(e)}")
+            yield {"type": "error", "error": str(e)}
+
+    async def _chat_stream_openai(
+        self,
+        messages: List[Dict[str, Any]],
+        tools_enabled: bool,
+        api_key: str
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """流式调用OpenAI兼容API"""
+        try:
+            client = OpenAI(
+                base_url=self.base_url,
+                api_key=api_key,
+            )
+
+            openai_messages = self._convert_to_openai_messages(messages)
+
+            request_kwargs = {
+                "model": self.model,
+                "messages": openai_messages,
+                "temperature": 1.0,
+                "stream": True,
+            }
+
+            if tools_enabled:
+                tools = self.get_tools()
+                if tools:
+                    request_kwargs["tools"] = self._convert_tools_to_openai_format(tools)
+                    logger.info(f"启用工具调用，发送 {len(tools)} 个工具")
+
+            accumulated_text = ""
+            tool_calls = []
+            content_blocks = []
+            current_tool_call = None
+
+            yield {"type": "stream_start"}
+
+            stream = await asyncio.to_thread(
+                lambda: client.chat.completions.create(**request_kwargs)
+            )
+
+            for chunk in stream:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta:
+                    if delta.content:
+                        accumulated_text += delta.content
+                        yield {"type": "text_delta", "text": delta.content}
+
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            if tc.index is not None:
+                                while len(tool_calls) <= tc.index:
+                                    tool_calls.append({"id": "", "name": "", "input": ""})
+                                
+                                if tc.id:
+                                    tool_calls[tc.index]["id"] = tc.id
+                                if tc.function and tc.function.name:
+                                    tool_calls[tc.index]["name"] = tc.function.name
+                                if tc.function and tc.function.arguments:
+                                    tool_calls[tc.index]["input"] += tc.function.arguments
+
+            # 处理工具调用
+            for i, tc in enumerate(tool_calls):
+                if tc["name"]:
+                    try:
+                        tc["input"] = json.loads(tc["input"]) if tc["input"] else {}
+                    except:
+                        tc["input"] = {}
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "input": tc["input"]
+                    })
+                    yield {
+                        "type": "tool_use_start",
+                        "id": tc["id"],
+                        "name": tc["name"]
+                    }
+                    yield {"type": "tool_use_stop"}
+
+            if accumulated_text:
+                content_blocks.append({"type": "text", "text": accumulated_text})
+
+            yield {
+                "type": "stream_end",
+                "content": accumulated_text,
+                "content_blocks": content_blocks,
+                "tool_calls": tool_calls,
+            }
+
+        except Exception as e:
+            logger.error(f"OpenAI流式调用异常: {str(e)}")
             yield {"type": "error", "error": str(e)}
 
     def _parse_minimax_tool_calls(self, text: str):
@@ -463,7 +679,6 @@ class LLMService:
         返回: (clean_text, tool_calls)
         """
         import re
-        import secrets
 
         tool_calls = []
         clean_text = text
@@ -496,10 +711,9 @@ class LLMService:
             except Exception as e:
                 logger.warning(f"解析 minimax tool_call 失败: {e}")
 
-        # 移除 XML 标记，保留前后的普通文本
         clean_text = re.sub(pattern, "", text, flags=re.DOTALL).strip()
         return clean_text, tool_calls
 
 
-# 全局单例
+# 全局单例（默认配置）
 llm_service = LLMService()

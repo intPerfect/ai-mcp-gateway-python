@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Gateway Router - 网关管理路由
-包含：网关配置、网关Key、LLM配置、LLM Key 四个模块
+包含：网关配置、网关Key、LLM配置管理、网关-LLM绑定
 """
 
 import logging
@@ -15,8 +15,8 @@ from app.infrastructure.database import get_db_session
 from app.infrastructure.database.models import (
     McpGateway,
     McpGatewayAuth,
-    McpLlm,
-    McpLlmKey,
+    McpLlmConfig,
+    McpGatewayLlm,
     SysBusinessLine,
 )
 from app.infrastructure.database import McpGatewayRepository
@@ -56,34 +56,36 @@ class GatewayUpdate(BaseModel):
 
 class GatewayKeyCreate(BaseModel):
     gateway_id: str
-    rate_limit: int = 1000
+    rate_limit: int = 600
     expire_days: int = 365
     remark: Optional[str] = None
 
 
-class LlmCreate(BaseModel):
-    llm_id: str
-    llm_name: str
-    llm_type: str
+class LlmConfigCreate(BaseModel):
+    config_name: str
+    api_type: str  # openai/anthropic
     base_url: str
-    default_model: Optional[str] = None
+    model_name: str
+    api_key: str  # 明文API Key，后端加密存储
     description: Optional[str] = None
 
 
-class LlmUpdate(BaseModel):
-    llm_name: Optional[str] = None
-    llm_type: Optional[str] = None
+class LlmConfigUpdate(BaseModel):
+    config_name: Optional[str] = None
+    api_type: Optional[str] = None
     base_url: Optional[str] = None
-    default_model: Optional[str] = None
+    model_name: Optional[str] = None
+    api_key: Optional[str] = None  # 如果提供新的Key，会加密存储
     description: Optional[str] = None
     status: Optional[int] = None
 
 
-class LlmKeyCreate(BaseModel):
-    llm_id: str
-    rate_limit: int = 1000
-    expire_days: int = 365
-    remark: Optional[str] = None
+class GatewayLlmBind(BaseModel):
+    llm_config_ids: List[str]
+
+
+class LlmConfigBindRequest(BaseModel):
+    llm_config_id: str
 
 
 # ============================================
@@ -126,7 +128,6 @@ async def get_gateways(
                 "gateway_name": g.gateway_name,
                 "gateway_desc": g.gateway_desc,
                 "version": g.version,
-                "auth": g.auth,
                 "business_line_id": g.business_line_id,
                 "status": g.status,
                 "create_time": str(g.create_time) if g.create_time else None,
@@ -159,7 +160,6 @@ async def create_gateway(
             gateway_name=form.gateway_name,
             gateway_desc=form.gateway_desc,
             version=form.version,
-            auth=form.auth,
             status=1,
         )
 
@@ -403,43 +403,50 @@ async def delete_gateway_key(
 
 
 # ============================================
-# LLM配置 API
+# LLM配置管理 API (v10.0)
 # ============================================
 
 
-@router.get("/llms")
-async def get_llms(
+def _generate_config_id() -> str:
+    """生成LLM配置ID"""
+    import secrets
+
+    return f"llm_{secrets.token_hex(8)}"
+
+
+@router.get("/llm-configs")
+async def get_llm_configs(
     current_user: CurrentUser = Depends(require_permission("gateway:read")),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """获取LLM列表"""
+    """获取LLM配置列表"""
     try:
         repository = McpGatewayRepository(db)
-        llms = await repository.get_all_llms()
+        configs = await repository.get_all_llm_configs()
 
         data = [
             {
-                "id": l.id,
-                "llm_id": l.llm_id,
-                "llm_name": l.llm_name,
-                "llm_type": l.llm_type,
-                "base_url": l.base_url,
-                "default_model": l.default_model,
-                "description": l.description,
-                "status": l.status,
-                "create_time": str(l.create_time) if l.create_time else None,
+                "id": c.id,
+                "config_id": c.config_id,
+                "config_name": c.config_name,
+                "api_type": c.api_type,
+                "base_url": c.base_url,
+                "model_name": c.model_name,
+                "description": c.description,
+                "status": c.status,
+                "create_time": str(c.create_time) if c.create_time else None,
             }
-            for l in llms
+            for c in configs
         ]
         return Result.success(data)
     except Exception as e:
-        logger.error(f"获取LLM列表失败: {str(e)}")
+        logger.error(f"获取LLM配置列表失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))
 
 
-@router.post("/llms")
-async def create_llm(
-    form: LlmCreate,
+@router.post("/llm-configs")
+async def create_llm_config(
+    form: LlmConfigCreate,
     current_user: CurrentUser = Depends(require_permission("gateway:create")),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -447,34 +454,39 @@ async def create_llm(
     try:
         repository = McpGatewayRepository(db)
 
-        # 检查llm_id是否已存在
-        existing = await repository.get_llm_by_llm_id(form.llm_id)
-        if existing:
-            return Result.error("DUPLICATE_ID", "LLM ID已存在")
+        # 生成配置ID
+        config_id = _generate_config_id()
 
-        llm = McpLlm(
-            llm_id=form.llm_id,
-            llm_name=form.llm_name,
-            llm_type=form.llm_type,
+        llm_config = McpLlmConfig(
+            config_id=config_id,
+            config_name=form.config_name,
+            api_type=form.api_type,
             base_url=form.base_url,
-            default_model=form.default_model,
+            model_name=form.model_name,
+            api_key=form.api_key,
             description=form.description,
             status=1,
         )
 
-        result = await repository.create_llm(llm)
+        result = await repository.create_llm_config(llm_config)
+        logger.info(f"创建LLM配置成功: config_id={config_id}, name={form.config_name}")
+
         return Result.success(
-            {"id": result.id, "llm_id": result.llm_id, "llm_name": result.llm_name}
+            {
+                "id": result.id,
+                "config_id": result.config_id,
+                "config_name": result.config_name,
+            }
         )
     except Exception as e:
         logger.error(f"创建LLM配置失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))
 
 
-@router.put("/llms/{llm_id}")
-async def update_llm(
-    llm_id: int,
-    form: LlmUpdate,
+@router.put("/llm-configs/{config_id}")
+async def update_llm_config(
+    config_id: int,
+    form: LlmConfigUpdate,
     current_user: CurrentUser = Depends(require_permission("gateway:update")),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -486,138 +498,134 @@ async def update_llm(
         if not update_data:
             return Result.error("INVALID_PARAM", "无更新数据")
 
-        result = await repository.update_llm(llm_id, **update_data)
+        result = await repository.update_llm_config(config_id, **update_data)
         if not result:
             return Result.error("NOT_FOUND", "LLM配置不存在")
 
-        return Result.success({"id": llm_id})
+        return Result.success({"id": config_id})
     except Exception as e:
         logger.error(f"更新LLM配置失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))
 
 
-@router.delete("/llms/{llm_id}")
-async def delete_llm(
-    llm_id: int,
+@router.delete("/llm-configs/{config_id}")
+async def delete_llm_config(
+    config_id: int,
     current_user: CurrentUser = Depends(require_permission("gateway:delete")),
     db: AsyncSession = Depends(get_db_session),
 ):
     """删除LLM配置"""
     try:
         repository = McpGatewayRepository(db)
-        success = await repository.delete_llm(llm_id)
+        success = await repository.delete_llm_config(config_id)
 
         if not success:
             return Result.error("NOT_FOUND", "LLM配置不存在")
 
-        return Result.success({"id": llm_id})
+        return Result.success({"id": config_id})
     except Exception as e:
         logger.error(f"删除LLM配置失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))
 
 
 # ============================================
-# LLM Key API
+# 网关-LLM绑定 API (v10.0)
 # ============================================
 
 
-@router.get("/llm-keys")
-async def get_llm_keys(
+@router.get("/gateways/{gateway_id}/llms")
+async def get_gateway_llms(
+    gateway_id: str,
     current_user: CurrentUser = Depends(require_permission("gateway:read")),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """获取LLM Key列表（脱敏）"""
+    """获取网关绑定的LLM配置列表"""
     try:
         repository = McpGatewayRepository(db)
-        keys = await repository.get_all_llm_keys()
+
+        # 验证网关存在
+        gateway = await repository.get_gateway_by_id(gateway_id)
+        if not gateway:
+            return Result.error("NOT_FOUND", "网关不存在")
+
+        llm_configs = await repository.get_gateway_llm_configs(gateway_id)
 
         data = [
             {
-                "id": k.id,
-                "llm_id": k.llm_id,
-                "key_id": k.key_id,
-                "key_preview": k.key_preview or f"llm-{k.key_id[:8]}...",
-                "rate_limit": k.rate_limit,
-                "expire_time": str(k.expire_time) if k.expire_time else None,
-                "remark": k.remark,
-                "status": k.status,
-                "create_time": str(k.create_time) if k.create_time else None,
+                "id": c.id,
+                "config_id": c.config_id,
+                "config_name": c.config_name,
+                "api_type": c.api_type,
+                "base_url": c.base_url,
+                "model_name": c.model_name,
+                "description": c.description,
+                "status": c.status,
             }
-            for k in keys
+            for c in llm_configs
         ]
         return Result.success(data)
     except Exception as e:
-        logger.error(f"获取LLM Key列表失败: {str(e)}")
+        logger.error(f"获取网关LLM列表失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))
 
 
-@router.post("/llm-keys")
-async def create_llm_key(
-    form: LlmKeyCreate,
-    current_user: CurrentUser = Depends(require_permission("gateway:create")),
+@router.post("/gateways/{gateway_id}/llms")
+async def bind_llm_to_gateway(
+    gateway_id: str,
+    form: LlmConfigBindRequest,
+    current_user: CurrentUser = Depends(require_permission("gateway:update")),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """创建LLM Key（返回完整Key，仅此一次）"""
+    """绑定LLM配置到网关"""
     try:
         repository = McpGatewayRepository(db)
 
-        # 检查LLM是否存在
-        llm = await repository.get_llm_by_llm_id(form.llm_id)
-        if not llm:
+        # 验证网关存在
+        gateway = await repository.get_gateway_by_id(gateway_id)
+        if not gateway:
+            return Result.error("NOT_FOUND", "网关不存在")
+
+        # 验证LLM配置存在
+        llm_config = await repository.get_llm_config_by_config_id(form.llm_config_id)
+        if not llm_config:
             return Result.error("NOT_FOUND", "LLM配置不存在")
 
-        # 生成 LLM Key
-        key_id, full_key = generate_api_key()
-        key_hash = hash_password(full_key)
-        key_preview = f"llm-{key_id[:8]}...{full_key[-4:]}"
-
-        expire_time = datetime.now() + timedelta(days=form.expire_days)
-
-        llm_key = McpLlmKey(
-            llm_id=form.llm_id,
-            key_id=key_id,
-            api_key_hash=key_hash,
-            key_preview=key_preview,
-            rate_limit=form.rate_limit,
-            expire_time=expire_time,
-            remark=form.remark,
-            status=1,
+        # 检查是否已绑定
+        is_bound = await repository.is_llm_bound_to_gateway(
+            gateway_id, form.llm_config_id
         )
+        if is_bound:
+            return Result.error("ALREADY_BOUND", "该LLM配置已绑定到此网关")
 
-        await repository.create_llm_key(llm_key)
-
-        logger.info(f"创建LLM Key成功: llm_id={form.llm_id}, key_id={key_id}")
+        await repository.bind_llm_to_gateway(gateway_id, form.llm_config_id)
+        logger.info(
+            f"绑定LLM到网关: gateway_id={gateway_id}, llm_config_id={form.llm_config_id}"
+        )
 
         return Result.success(
-            {
-                "id": llm_key.id,
-                "llm_id": form.llm_id,
-                "llm_key": full_key,  # 完整Key仅在创建时返回
-                "key_preview": key_preview,
-                "expire_time": expire_time.isoformat(),
-                "message": "请立即保存API Key，关闭后将无法再次查看完整Key",
-            }
+            {"gateway_id": gateway_id, "llm_config_id": form.llm_config_id}
         )
     except Exception as e:
-        logger.error(f"创建LLM Key失败: {str(e)}")
+        logger.error(f"绑定LLM失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))
 
 
-@router.delete("/llm-keys/{key_id}")
-async def delete_llm_key(
-    key_id: int,
-    current_user: CurrentUser = Depends(require_permission("gateway:delete")),
+@router.delete("/gateways/{gateway_id}/llms/{llm_config_id}")
+async def unbind_llm_from_gateway(
+    gateway_id: str,
+    llm_config_id: str,
+    current_user: CurrentUser = Depends(require_permission("gateway:update")),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """删除LLM Key"""
+    """解绑LLM配置"""
     try:
         repository = McpGatewayRepository(db)
-        success = await repository.delete_llm_key(key_id)
+        success = await repository.unbind_llm_from_gateway(gateway_id, llm_config_id)
 
-        if not success:
-            return Result.error("NOT_FOUND", "Key不存在")
-
-        return Result.success({"id": key_id})
+        logger.info(f"解绑LLM: gateway_id={gateway_id}, llm_config_id={llm_config_id}")
+        return Result.success(
+            {"gateway_id": gateway_id, "llm_config_id": llm_config_id}
+        )
     except Exception as e:
-        logger.error(f"删除LLM Key失败: {str(e)}")
+        logger.error(f"解绑LLM失败: {str(e)}")
         return Result.error("SYSTEM_ERROR", str(e))

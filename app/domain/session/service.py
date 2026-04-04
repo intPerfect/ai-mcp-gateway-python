@@ -24,6 +24,10 @@ class PendingSession:
     gateway_key: str
     llm_key: str
     microservice_ids: Optional[List[int]] = None
+    llm_config_id: Optional[str] = None
+    api_type: str = "anthropic"
+    base_url: Optional[str] = None
+    model_name: Optional[str] = None
 
 
 class WebSocketSessionManager:
@@ -37,13 +41,23 @@ class WebSocketSessionManager:
         gateway_key: str,
         llm_key: str,
         microservice_ids: Optional[List[int]] = None,
+        llm_config_id: Optional[str] = None,
+        api_type: str = "anthropic",
+        base_url: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> str:
         """创建待连接的会话"""
         session_id = f"session_{secrets.token_hex(16)}"
         self.pending_sessions[session_id] = PendingSession(
-            gateway_key, llm_key, microservice_ids
+            gateway_key=gateway_key,
+            llm_key=llm_key,
+            microservice_ids=microservice_ids,
+            llm_config_id=llm_config_id,
+            api_type=api_type,
+            base_url=base_url,
+            model_name=model_name,
         )
-        logger.info(f"创建待连接会话: {session_id}, 微服务筛选: {microservice_ids}")
+        logger.info(f"创建待连接会话: {session_id}, 微服务筛选: {microservice_ids}, LLM配置: {llm_config_id}")
         return session_id
 
     def get_pending_session(self, session_id: str) -> Optional[PendingSession]:

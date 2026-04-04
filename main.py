@@ -2,12 +2,71 @@
 FastAPI Application Entry Point for MCP Gateway
 """
 
-import logging
+import logging.config
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import get_settings
+LOGS_DIR = Path(__file__).parent / "logs"
+LOGS_DIR.mkdir(exist_ok=True)
+
+LOGGING_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+        },
+        "gateway_file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": str(LOGS_DIR / "gateway.log"),
+            "maxBytes": 10485760,
+            "backupCount": 5,
+            "formatter": "default",
+            "encoding": "utf-8",
+        },
+        "uvicorn_file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": str(LOGS_DIR / "uvicorn.log"),
+            "maxBytes": 10485760,
+            "backupCount": 5,
+            "formatter": "default",
+            "encoding": "utf-8",
+        },
+    },
+    "loggers": {
+        "": {
+            "handlers": ["console", "gateway_file"],
+            "level": logging.INFO,
+        },
+        "uvicorn": {
+            "handlers": ["console", "uvicorn_file"],
+            "level": logging.INFO,
+            "propagate": False,
+        },
+        "uvicorn.error": {
+            "handlers": ["console", "uvicorn_file"],
+            "level": logging.INFO,
+            "propagate": False,
+        },
+        "uvicorn.access": {
+            "handlers": ["console", "uvicorn_file"],
+            "level": logging.INFO,
+            "propagate": False,
+        },
+    },
+}
+
+logging.config.dictConfig(LOGGING_CONFIG)
+logger = logging.getLogger(__name__)
 from app.api.routers import (
     mcp_router,
     chat_router,
@@ -21,6 +80,7 @@ from app.api.routers import (
     permission_router,
     business_line_router,
 )
+from app.api.routers.admin import router as admin_router
 from app.api.routers.chat import websocket_handler, load_tools_from_db
 from app.services.mcp_tool_registry import mcp_tool_registry
 
@@ -69,6 +129,7 @@ app.include_router(user_router, tags=["User"])
 app.include_router(role_router, tags=["Role"])
 app.include_router(permission_router, tags=["Permission"])
 app.include_router(business_line_router, tags=["Business Line"])
+app.include_router(admin_router, prefix="/api/admin", tags=["Admin"])
 
 
 @app.websocket("/ws/chat")

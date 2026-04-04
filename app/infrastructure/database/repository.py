@@ -16,8 +16,8 @@ from app.infrastructure.database.models import (
     McpProtocolHttp,
     McpProtocolMapping,
     McpMicroservice,
-    McpLlm,
-    McpLlmKey,
+    McpLlmConfig,
+    McpGatewayLlm,
     McpGatewayMicroservice,
     # RBAC models
     SysUser,
@@ -81,12 +81,6 @@ class McpGatewayRepository:
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
-    async def get_gateway_auth_status(self, gateway_id: str) -> Optional[int]:
-        """获取网关认证状态"""
-        stmt = select(McpGateway.auth).where(McpGateway.gateway_id == gateway_id)
-        result = await self.session.execute(stmt)
-        return result.scalars().first()
-
     async def get_gateway_id_by_api_key(self, api_key: str) -> Optional[str]:
         """通过API Key查找对应的gateway_id"""
         from app.utils.security import parse_api_key
@@ -116,7 +110,9 @@ class McpGatewayRepository:
         result = await self.session.execute(stmt)
         return len(result.scalars().all())
 
-    async def get_tools_by_gateway_id(self, gateway_id: str = None) -> List[McpGatewayTool]:
+    async def get_tools_by_gateway_id(
+        self, gateway_id: str = None
+    ) -> List[McpGatewayTool]:
         """获取网关所有工具，如果 gateway_id 为 None 则返回所有工具"""
         if gateway_id:
             stmt = select(McpGatewayTool).where(McpGatewayTool.gateway_id == gateway_id)
@@ -285,16 +281,6 @@ class McpGatewayRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_unbind_tools(self) -> List[McpGatewayTool]:
-        """获取未绑定微服务的工具"""
-        stmt = (
-            select(McpGatewayTool)
-            .where(McpGatewayTool.microservice_id.is_(None))
-            .order_by(McpGatewayTool.id)
-        )
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
-
     async def bind_tool_to_microservice(
         self, tool_id: int, microservice_id: int
     ) -> bool:
@@ -308,23 +294,23 @@ class McpGatewayRepository:
         await self.session.commit()
         return True
 
-    async def unbind_tool(self, tool_id: int) -> bool:
-        """解绑工具"""
-        stmt = (
-            update(McpGatewayTool)
-            .where(McpGatewayTool.tool_id == tool_id)
-            .values(microservice_id=None)
-        )
-        await self.session.execute(stmt)
-        await self.session.commit()
-        return True
-
     async def update_tool_enabled(self, tool_id: int, enabled: int) -> bool:
         """更新工具启用状态"""
         stmt = (
             update(McpGatewayTool)
             .where(McpGatewayTool.tool_id == tool_id)
             .values(enabled=enabled)
+        )
+        await self.session.execute(stmt)
+        await self.session.commit()
+        return True
+
+    async def update_tool(self, tool_id: int, **kwargs) -> bool:
+        """更新工具信息"""
+        stmt = (
+            update(McpGatewayTool)
+            .where(McpGatewayTool.tool_id == tool_id)
+            .values(**kwargs)
         )
         await self.session.execute(stmt)
         await self.session.commit()
@@ -490,87 +476,122 @@ class McpGatewayRepository:
         return True
 
     # ============================================
-    # LLM管理方法
+    # LLM 配置管理方法 (v10.0)
     # ============================================
 
-    async def get_all_llms(self) -> List[McpLlm]:
+    async def get_all_llm_configs(self) -> List[McpLlmConfig]:
         """获取所有LLM配置"""
-        stmt = select(McpLlm).order_by(McpLlm.id.desc())
+        stmt = select(McpLlmConfig).order_by(McpLlmConfig.id.desc())
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_llm_by_id(self, llm_id: int) -> Optional[McpLlm]:
+    async def get_llm_config_by_id(self, config_id: int) -> Optional[McpLlmConfig]:
         """根据ID获取LLM配置"""
-        stmt = select(McpLlm).where(McpLlm.id == llm_id)
+        stmt = select(McpLlmConfig).where(McpLlmConfig.id == config_id)
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
-    async def get_llm_by_llm_id(self, llm_id: str) -> Optional[McpLlm]:
-        """根据llm_id字符串获取LLM配置"""
-        stmt = select(McpLlm).where(McpLlm.llm_id == llm_id)
+    async def get_llm_config_by_config_id(
+        self, config_id: str
+    ) -> Optional[McpLlmConfig]:
+        """根据config_id字符串获取LLM配置"""
+        stmt = select(McpLlmConfig).where(McpLlmConfig.config_id == config_id)
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
-    async def create_llm(self, llm: McpLlm) -> McpLlm:
+    async def create_llm_config(self, llm_config: McpLlmConfig) -> McpLlmConfig:
         """创建LLM配置"""
-        self.session.add(llm)
+        self.session.add(llm_config)
         await self.session.commit()
-        await self.session.refresh(llm)
-        return llm
+        await self.session.refresh(llm_config)
+        return llm_config
 
-    async def update_llm(self, llm_id: int, **kwargs) -> Optional[McpLlm]:
+    async def update_llm_config(
+        self, config_id: int, **kwargs
+    ) -> Optional[McpLlmConfig]:
         """更新LLM配置"""
-        stmt = update(McpLlm).where(McpLlm.id == llm_id).values(**kwargs)
+        stmt = update(McpLlmConfig).where(McpLlmConfig.id == config_id).values(**kwargs)
         await self.session.execute(stmt)
         await self.session.commit()
-        return await self.get_llm_by_id(llm_id)
+        return await self.get_llm_config_by_id(config_id)
 
-    async def delete_llm(self, llm_id: int) -> bool:
+    async def delete_llm_config(self, config_id: int) -> bool:
         """删除LLM配置"""
-        llm = await self.session.get(McpLlm, llm_id)
-        if not llm:
+        llm_config = await self.session.get(McpLlmConfig, config_id)
+        if not llm_config:
             return False
-        await self.session.delete(llm)
+        await self.session.delete(llm_config)
         await self.session.commit()
         return True
 
     # ============================================
-    # LLM Key管理方法
+    # 网关-LLM绑定方法 (v10.0)
     # ============================================
 
-    async def get_all_llm_keys(self) -> List[McpLlmKey]:
-        """获取所有LLM Key"""
-        stmt = select(McpLlmKey).order_by(McpLlmKey.id.desc())
+    async def get_gateway_llms(self, gateway_id: str) -> List[McpGatewayLlm]:
+        """获取网关绑定的LLM"""
+        stmt = select(McpGatewayLlm).where(
+            and_(McpGatewayLlm.gateway_id == gateway_id, McpGatewayLlm.status == 1)
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_llm_key_by_id(self, key_id: int) -> Optional[McpLlmKey]:
-        """根据ID获取LLM Key"""
-        stmt = select(McpLlmKey).where(McpLlmKey.id == key_id)
+    async def get_gateway_llm_configs(self, gateway_id: str) -> List[McpLlmConfig]:
+        """获取网关绑定的LLM配置列表"""
+        stmt = (
+            select(McpLlmConfig)
+            .join(McpGatewayLlm, McpLlmConfig.config_id == McpGatewayLlm.llm_config_id)
+            .where(
+                and_(
+                    McpGatewayLlm.gateway_id == gateway_id,
+                    McpGatewayLlm.status == 1,
+                    McpLlmConfig.status == 1,
+                )
+            )
+        )
         result = await self.session.execute(stmt)
-        return result.scalars().first()
+        return list(result.scalars().all())
 
-    async def get_llm_key_by_key_id(self, key_id: str) -> Optional[McpLlmKey]:
-        """根据key_id字符串获取LLM Key"""
-        stmt = select(McpLlmKey).where(McpLlmKey.key_id == key_id)
+    async def bind_llm_to_gateway(
+        self, gateway_id: str, llm_config_id: str
+    ) -> McpGatewayLlm:
+        """绑定LLM到网关"""
+        binding = McpGatewayLlm(gateway_id=gateway_id, llm_config_id=llm_config_id)
+        self.session.add(binding)
+        await self.session.commit()
+        await self.session.refresh(binding)
+        return binding
+
+    async def unbind_llm_from_gateway(
+        self, gateway_id: str, llm_config_id: str
+    ) -> bool:
+        """解绑LLM"""
+        stmt = select(McpGatewayLlm).where(
+            and_(
+                McpGatewayLlm.gateway_id == gateway_id,
+                McpGatewayLlm.llm_config_id == llm_config_id,
+            )
+        )
         result = await self.session.execute(stmt)
-        return result.scalars().first()
-
-    async def create_llm_key(self, llm_key: McpLlmKey) -> McpLlmKey:
-        """创建LLM Key"""
-        self.session.add(llm_key)
-        await self.session.commit()
-        await self.session.refresh(llm_key)
-        return llm_key
-
-    async def delete_llm_key(self, key_id: int) -> bool:
-        """删除LLM Key"""
-        key = await self.session.get(McpLlmKey, key_id)
-        if not key:
-            return False
-        await self.session.delete(key)
-        await self.session.commit()
+        binding = result.scalars().first()
+        if binding:
+            await self.session.delete(binding)
+            await self.session.commit()
         return True
+
+    async def is_llm_bound_to_gateway(
+        self, gateway_id: str, llm_config_id: str
+    ) -> bool:
+        """检查LLM是否绑定到网关"""
+        stmt = select(McpGatewayLlm).where(
+            and_(
+                McpGatewayLlm.gateway_id == gateway_id,
+                McpGatewayLlm.llm_config_id == llm_config_id,
+                McpGatewayLlm.status == 1,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first() is not None
 
 
 # ============================================
