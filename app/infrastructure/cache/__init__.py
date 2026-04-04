@@ -3,6 +3,6 @@
 Cache infrastructure module
 """
 
-from app.infrastructure.cache.redis_client import get_redis, RedisClient
+from app.infrastructure.cache.redis_client import get_redis, RedisClient, PermissionCache
 
-__all__ = ["get_redis", "RedisClient"]
+__all__ = ["get_redis", "RedisClient", "PermissionCache"]

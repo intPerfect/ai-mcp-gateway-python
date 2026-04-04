@@ -18,6 +18,7 @@ DELETE FROM mcp_gateway;
 DELETE FROM mcp_microservice;
 DELETE FROM mcp_gateway_llm;
 DELETE FROM mcp_llm_config;
+DELETE FROM sys_role_business_line;
 DELETE FROM sys_gateway_permission;
 DELETE FROM sys_role_permission;
 DELETE FROM sys_user_role;
@@ -63,8 +64,7 @@ INSERT INTO mcp_gateway_llm (gateway_id, llm_config_id, status) VALUES
 -- 业务线
 INSERT INTO sys_business_line (id, line_code, line_name, description, status) VALUES
 (1, 'OA', 'OA办公', 'OA办公自动化系统', 1),
-(2, 'PRODUCT', '商品服务', '商品管理微服务', 1),
-(3, 'OTHER', '其他', '其他业务线', 1);
+(2, 'PRODUCT', '商品服务', '商品管理微服务', 1);
 
 -- 资源定义
 INSERT INTO sys_resource (id, resource_code, resource_name, resource_type, parent_id, api_path, sort_order, status) VALUES
@@ -109,65 +109,106 @@ INSERT INTO sys_permission (id, permission_code, permission_name, resource_id, a
 -- SUPER_ADMIN: 超级管理员 - 全局角色
 -- OA_ADMIN: OA管理员 - OA业务线管理员
 -- PRODUCT_ADMIN: 商品管理员 - 商品业务线管理员
+-- OA_USER: OA普通用户 - 只能查看和对话
+-- PRODUCT_USER: 商品普通用户 - 只能查看和对话
 INSERT INTO sys_role (id, role_code, role_name, description, business_line_id, is_system, status) VALUES
 (1, 'SUPER_ADMIN', '超级管理员', '拥有系统全部权限', NULL, 1, 1),
 (2, 'OA_ADMIN', 'OA管理员', 'OA业务线管理员', 1, 1, 1),
-(3, 'PRODUCT_ADMIN', '商品管理员', '商品业务线管理员', 2, 1, 1);
+(3, 'PRODUCT_ADMIN', '商品管理员', '商品业务线管理员', 2, 1, 1),
+(4, 'OA_USER', 'OA普通用户', 'OA业务线普通用户，只能查看和对话', 1, 1, 1),
+(5, 'PRODUCT_USER', '商品普通用户', '商品业务线普通用户，只能查看和对话', 2, 1, 1);
 
 -- 用户 (密码: admin123 或 123456)
 -- admin 密码: admin123
 -- oa_admin 密码: 123456
 -- product_admin 密码: 123456
+-- oa_user 密码: 123456
+-- product_user 密码: 123456
 INSERT INTO sys_user (id, username, password_hash, real_name, email, status) VALUES
 (1, 'admin', '$2b$12$dCUfQCPNRi/QAuDMIsyDYe0ID5h3BhCoYvUlnfvFf7XPUFGvy2682', '系统管理员', 'admin@example.com', 1),
 (2, 'oa_admin', '$2b$12$YW1lGkiyAMwcg.lOWwi0EubeZpLMO4cpyLMAPTyOZoUdGIkCw.Cpa', 'OA管理员', 'oa@example.com', 1),
-(3, 'product_admin', '$2b$12$YW1lGkiyAMwcg.lOWwi0EubeZpLMO4cpyLMAPTyOZoUdGIkCw.Cpa', '商品管理员', 'product@example.com', 1);
+(3, 'product_admin', '$2b$12$YW1lGkiyAMwcg.lOWwi0EubeZpLMO4cpyLMAPTyOZoUdGIkCw.Cpa', '商品管理员', 'product@example.com', 1),
+(4, 'oa_user', '$2b$12$YW1lGkiyAMwcg.lOWwi0EubeZpLMO4cpyLMAPTyOZoUdGIkCw.Cpa', 'OA普通用户', 'oa_user@example.com', 1),
+(5, 'product_user', '$2b$12$YW1lGkiyAMwcg.lOWwi0EubeZpLMO4cpyLMAPTyOZoUdGIkCw.Cpa', '商品普通用户', 'product_user@example.com', 1);
 
 -- 用户角色关联
 INSERT INTO sys_user_role (user_id, role_id) VALUES
 (1, 1), -- admin -> SUPER_ADMIN
 (2, 2), -- oa_admin -> OA_ADMIN
-(3, 3); -- product_admin -> PRODUCT_ADMIN
+(3, 3), -- product_admin -> PRODUCT_ADMIN
+(4, 4), -- oa_user -> OA_USER
+(5, 5); -- product_user -> PRODUCT_USER
 
 -- 用户-业务线关联
 INSERT INTO sys_user_business_line (user_id, business_line_id, is_admin) VALUES
 (1, 1, 1), -- admin 是所有业务线管理员
 (1, 2, 1),
-(1, 3, 1),
 (2, 1, 1), -- oa_admin 是OA业务线管理员
-(2, 3, 0), -- oa_admin 也属于其他业务线
 (3, 2, 1), -- product_admin 是商品业务线管理员
-(3, 3, 0); -- product_admin 也属于其他业务线
+(4, 1, 0), -- oa_user 是OA业务线普通用户
+(5, 2, 0); -- product_user 是商品业务线普通用户
 
 -- 超级管理员拥有所有权限
 INSERT INTO sys_role_permission (role_id, permission_id)
 SELECT 1, id FROM sys_permission WHERE status = 1;
 
--- OA_ADMIN 权限: 只读权限 + 用户增删改权限
+-- OA_ADMIN 权限: 网关管理权限(针对OA网关) + 只读权限(其他网关) + 用户管理权限 + 角色管理权限
 INSERT INTO sys_role_permission (role_id, permission_id) VALUES
+(2, 1),   -- gateway:create
 (2, 2),   -- gateway:read
+(2, 3),   -- gateway:update
+(2, 4),   -- gateway:delete
 (2, 6),   -- microservice:read
+(2, 7),   -- microservice:update
 (2, 10),  -- tool:read
+(2, 11),  -- tool:update
 (2, 13),  -- user:create
 (2, 14),  -- user:read
 (2, 15),  -- user:update
 (2, 16),  -- user:delete
-(2, 18);  -- role:read
+(2, 17),  -- role:create
+(2, 18),  -- role:read
+(2, 19),  -- role:update
+(2, 20),  -- role:delete
+(2, 22),  -- business_line:read
+(2, 23);  -- business_line:update
 
--- PRODUCT_ADMIN 权限: 网关、微服务、工具的读写权限 + 用户增删改权限
+-- PRODUCT_ADMIN 权限: 网关、微服务、工具的管理权限 + 用户管理权限 + 角色管理权限
 INSERT INTO sys_role_permission (role_id, permission_id) VALUES
 (3, 1),   -- gateway:create
 (3, 2),   -- gateway:read
 (3, 3),   -- gateway:update
+(3, 4),   -- gateway:delete
 (3, 5),   -- microservice:create
 (3, 6),   -- microservice:read
 (3, 7),   -- microservice:update
+(3, 8),   -- microservice:delete
 (3, 9),   -- tool:create
 (3, 10),  -- tool:read
 (3, 11),  -- tool:update
+(3, 12),  -- tool:delete
 (3, 13),  -- user:create
+(3, 14),  -- user:read
 (3, 15),  -- user:update
-(3, 16);  -- user:delete
+(3, 16),  -- user:delete
+(3, 17),  -- role:create
+(3, 18),  -- role:read
+(3, 19),  -- role:update
+(3, 20),  -- role:delete
+(3, 22),  -- business_line:read
+(3, 23);  -- business_line:update
+
+-- OA_USER 权限: 只读权限（不包含系统管理模块）
+INSERT INTO sys_role_permission (role_id, permission_id) VALUES
+(4, 2),   -- gateway:read
+(4, 6),   -- microservice:read
+(4, 10);  -- tool:read
+
+-- PRODUCT_USER 权限: 只读权限（不包含系统管理模块）
+INSERT INTO sys_role_permission (role_id, permission_id) VALUES
+(5, 2),   -- gateway:read
+(5, 6),   -- microservice:read
+(5, 10);  -- tool:read
 
 -- 网关权限配置
 INSERT INTO sys_gateway_permission (role_id, gateway_id, can_create, can_read, can_update, can_delete, can_chat) VALUES
@@ -176,7 +217,14 @@ INSERT INTO sys_gateway_permission (role_id, gateway_id, can_create, can_read, c
 (2, 'gateway_001', 0, 1, 0, 0, 1), -- OA管理员只读和对话
 (2, 'gateway_002', 1, 1, 1, 1, 1), -- OA管理员全部权限
 (3, 'gateway_001', 1, 1, 1, 0, 1), -- 商品管理员除删除外全部权限
-(3, 'gateway_002', 0, 1, 0, 0, 1); -- 商品管理员只读和对话
+(3, 'gateway_002', 0, 1, 0, 0, 1), -- 商品管理员只读和对话
+(4, 'gateway_002', 0, 1, 0, 0, 1), -- OA普通用户只能查看和对话
+(5, 'gateway_001', 0, 1, 0, 0, 1); -- 商品普通用户只能查看和对话
+
+-- 角色-业务线管理员关联（通过角色授予业务线管理员权限）
+INSERT INTO sys_role_business_line (role_id, business_line_id, is_admin) VALUES
+(2, 1, 1),  -- OA_ADMIN 角色是OA业务线管理员
+(3, 2, 1);  -- PRODUCT_ADMIN 角色是商品业务线管理员
 
 -- =====================================================
 -- 2. 插入微服务配置

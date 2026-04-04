@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.infrastructure.database.connection import get_db_session
 from app.infrastructure.database.repository import RbacRepository, McpGatewayRepository
 from app.infrastructure.database.models import SysRole
+from app.infrastructure.cache.redis_client import get_redis, PermissionCache
 from app.domain.rbac import RoleInfo, RoleCreate, RoleUpdate, DataPermissionSet
 from app.utils.result import Result
 from app.api.routers.auth import (
@@ -398,6 +399,14 @@ async def set_role_permissions(
     await repo.set_role_permissions(role_id, permission_ids)
     logger.info(f"Permissions set for role {role.role_code} by {current_user.username}")
 
+    # 失效缓存
+    try:
+        redis = await get_redis()
+        cache = PermissionCache(redis)
+        await cache.invalidate_role_related(role_id)
+    except Exception as e:
+        logger.warning(f"失效缓存失败: {e}")
+
     return Result.success(message="权限设置成功")
 
 
@@ -407,7 +416,11 @@ async def get_role_gateway_permissions(
     current_user: CurrentUser = Depends(require_permission("role:read")),
     session: AsyncSession = Depends(get_db_session),
 ):
-    """获取角色的网关权限"""
+    """获取角色的网关权限
+
+    - 超级管理员：可以看到所有网关的权限
+    - 业务线管理员：只能看到自己业务线范围内的网关权限
+    """
     repo = RbacRepository(session)
     mcp_repo = McpGatewayRepository(session)
     role = await repo.get_role_by_id(role_id)
@@ -428,6 +441,15 @@ async def get_role_gateway_permissions(
     gateways = await mcp_repo.get_all_gateways()
     business_lines = await repo.get_all_business_lines()
     bl_map = {bl.id: bl.line_name for bl in business_lines}
+
+    # 业务线管理员只能看到自己业务线范围内的网关
+    if not is_super_admin(current_user):
+        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        gateways = [
+            gw
+            for gw in gateways
+            if gw.business_line_id is None or gw.business_line_id in managed_bl_ids
+        ]
 
     # 获取角色的网关权限
     permissions = await repo.get_gateway_permissions_by_role(role_id)
@@ -463,14 +485,20 @@ async def set_role_gateway_permissions(
     current_user: CurrentUser = Depends(require_permission("role:update")),
     session: AsyncSession = Depends(get_db_session),
 ):
-    """设置角色的网关权限"""
+    """设置角色的网关权限
+    
+    - 超级管理员：可以设置所有网关的权限
+    - 业务线管理员：只能设置自己业务线范围内的网关权限
+    """
     repo = RbacRepository(session)
+    mcp_repo = McpGatewayRepository(session)
     role = await repo.get_role_by_id(role_id)
 
     if not role:
         return Result.not_found("角色不存在")
 
     # 权限校验
+    managed_bl_ids = None
     if not is_super_admin(current_user):
         managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
         if (
@@ -479,12 +507,24 @@ async def set_role_gateway_permissions(
         ):
             return Result.fail(code="403", message="无权修改该角色")
 
-    # 转换请求格式
+    # 获取所有网关
+    gateways = await mcp_repo.get_all_gateways()
+    gateway_bl_map = {gw.gateway_id: gw.business_line_id for gw in gateways}
+
+    # 转换请求格式，业务线管理员只能设置自己业务线范围内的网关
     permissions = []
     for item in request:
+        gateway_id = item["gateway_id"]
+        
+        # 业务线管理员检查网关是否在自己业务线范围内
+        if managed_bl_ids is not None:
+            gw_bl_id = gateway_bl_map.get(gateway_id)
+            if gw_bl_id is not None and gw_bl_id not in managed_bl_ids:
+                continue  # 跳过不在范围内的网关
+        
         permissions.append(
             {
-                "gateway_id": item["gateway_id"],
+                "gateway_id": gateway_id,
                 "can_create": item.get("can_create", False),
                 "can_read": item.get("can_read", False),
                 "can_update": item.get("can_update", False),
@@ -493,10 +533,81 @@ async def set_role_gateway_permissions(
             }
         )
 
-    await repo.set_role_gateway_permissions(role_id, permissions)
+    if managed_bl_ids is not None:
+        # 业务线管理员：仅更新自己业务线范围内的网关权限，保留其他业务线的权限不变
+        scoped_gateway_ids = [
+            gw.gateway_id
+            for gw in gateways
+            if gw.business_line_id is None or gw.business_line_id in managed_bl_ids
+        ]
+        await repo.set_role_gateway_permissions_scoped(
+            role_id, permissions, scoped_gateway_ids
+        )
+    else:
+        # 超级管理员：全量替换
+        await repo.set_role_gateway_permissions(role_id, permissions)
 
     logger.info(
         f"Gateway permissions set for role {role.role_code} by {current_user.username}"
     )
 
+    # 失效缓存
+    try:
+        redis = await get_redis()
+        cache = PermissionCache(redis)
+        await cache.invalidate_role_related(role_id)
+    except Exception as e:
+        logger.warning(f"失效缓存失败: {e}")
+
     return Result.success(message="网关权限设置成功")
+
+
+@router.get("/{role_id}/bl-admin", response_model=Result[List[int]])
+async def get_role_bl_admin(
+    role_id: int,
+    current_user: CurrentUser = Depends(require_permission("role:read")),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """获取角色的业务线管理员权限"""
+    repo = RbacRepository(session)
+    role = await repo.get_role_by_id(role_id)
+    if not role:
+        return Result.not_found("角色不存在")
+
+    bl_admin_ids = await repo.get_role_bl_admin_ids(role_id)
+    return Result.success(data=bl_admin_ids)
+
+
+@router.put("/{role_id}/bl-admin", response_model=Result)
+async def set_role_bl_admin(
+    role_id: int,
+    bl_ids: List[int],
+    current_user: CurrentUser = Depends(require_permission("role:update")),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """设置角色的业务线管理员权限"""
+    repo = RbacRepository(session)
+    role = await repo.get_role_by_id(role_id)
+    if not role:
+        return Result.not_found("角色不存在")
+
+    # 权限校验
+    if not is_super_admin(current_user):
+        managed_bl_ids = await get_user_managed_business_line_ids(repo, current_user.id)
+        if role.business_line_id is not None and role.business_line_id not in managed_bl_ids:
+            return Result.fail(code="403", message="无权修改该角色")
+        # 业务线管理员只能设置自己管理的业务线
+        bl_ids = [bl_id for bl_id in bl_ids if bl_id in managed_bl_ids]
+
+    await repo.set_role_bl_admin_ids(role_id, bl_ids)
+    logger.info(f"BL admin set for role {role.role_code} by {current_user.username}: {bl_ids}")
+
+    # 失效缓存
+    try:
+        redis = await get_redis()
+        cache = PermissionCache(redis)
+        await cache.invalidate_role_related(role_id)
+    except Exception as e:
+        logger.warning(f"失效缓存失败: {e}")
+
+    return Result.success(message="业务线管理员权限设置成功")

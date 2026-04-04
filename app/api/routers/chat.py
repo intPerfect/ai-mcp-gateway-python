@@ -295,6 +295,11 @@ async def websocket_handler(websocket):
     except Exception as e:
         logger.error(f"加载工具失败: {e}")
 
+    # 获取带 microservice_name 的工具列表（根据选择的微服务筛选）
+    tools_with_ms = await get_tools_with_microservice(microservice_ids)
+    allowed_tool_names = [t["name"] for t in tools_with_ms]
+    logger.info(f"允许的工具({len(allowed_tool_names)}个): {allowed_tool_names}")
+
     # 创建 ReAct Agent 会话
     agent_session = react_agent.create_session(
         session_id=session_id,
@@ -306,6 +311,7 @@ async def websocket_handler(websocket):
         api_type=api_type,
         base_url=base_url,
         model_name=model_name,
+        allowed_tool_names=allowed_tool_names,
     )
 
     # 记录会话开始
@@ -316,8 +322,6 @@ async def websocket_handler(websocket):
     )
 
     try:
-        # 获取带 microservice_name 的工具列表（根据选择的微服务筛选）
-        tools_with_ms = await get_tools_with_microservice(microservice_ids)
         await websocket.send_json(WSEventFactory.welcome(session_id, tools_with_ms))
 
         # 主消息循环

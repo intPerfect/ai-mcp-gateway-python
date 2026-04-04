@@ -323,6 +323,18 @@ class SysGatewayPermission(Base):
     create_time = Column(DateTime, default=datetime.now)
 
 
+class SysRoleBusinessLine(Base):
+    """角色-业务线管理员关联表"""
+
+    __tablename__ = "sys_role_business_line"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    role_id = Column(BigInteger, nullable=False)
+    business_line_id = Column(BigInteger, nullable=False)
+    is_admin = Column(SmallInteger, default=0)
+    create_time = Column(DateTime, default=datetime.now)
+
+
 class SysLoginLog(Base):
     """登录日志表"""
 

@@ -2,6 +2,7 @@
 FastAPI Application Entry Point for MCP Gateway
 """
 
+import logging
 import logging.config
 import os
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
-LOGS_DIR = Path(__file__).parent / "logs"
+LOGS_DIR = Path(__file__).parent.parent / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
 
 LOGGING_CONFIG = {
@@ -67,6 +68,7 @@ LOGGING_CONFIG = {
 
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
+from app.config import get_settings
 from app.api.routers import (
     mcp_router,
     chat_router,
@@ -83,11 +85,6 @@ from app.api.routers import (
 from app.api.routers.admin import router as admin_router
 from app.api.routers.chat import websocket_handler, load_tools_from_db
 from app.services.mcp_tool_registry import mcp_tool_registry
-
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
 
 settings = get_settings()
 

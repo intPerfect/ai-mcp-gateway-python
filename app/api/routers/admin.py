@@ -16,6 +16,7 @@ from app.infrastructure.database.models import McpUsageLog, McpGatewayAuth, McpG
 from app.domain.usage.service import UsageService, get_usage_service
 from app.utils.result import Result
 from app.api.routers.auth import require_auth, UserInfo as CurrentUser
+from app.domain.rbac.service import PermissionService
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ router = APIRouter()
 
 class UsageStatsResponse(BaseModel):
     """全局使用统计响应"""
+
     total_keys: int
     total_calls: int
     active_keys: int
@@ -32,6 +34,7 @@ class UsageStatsResponse(BaseModel):
 
 class KeyUsageInfo(BaseModel):
     """单个 Key 使用情况"""
+
     gateway_id: str
     key_id: str
     key_preview: str
@@ -44,6 +47,7 @@ class KeyUsageInfo(BaseModel):
 
 class UsageLogItem(BaseModel):
     """使用日志条目"""
+
     id: int
     gateway_id: str
     key_id: str
@@ -57,21 +61,33 @@ class UsageLogItem(BaseModel):
 @router.get("/usage/stats")
 async def get_usage_stats(
     current_user: CurrentUser = Depends(require_auth),
+    db: AsyncSession = Depends(get_db_session),
 ):
-    """获取全局使用统计（管理员用）"""
-    if "SUPER_ADMIN" not in current_user.roles:
-        return Result.error("FORBIDDEN", "需要超级管理员权限")
-    
+    """获取使用统计"""
     try:
-        usage_service = await get_usage_service()
-        stats = await usage_service.get_all_usage_stats()
-        
-        return Result.success({
-            "total_keys": stats.total_keys,
-            "total_calls": stats.total_calls,
-            "active_keys": stats.active_keys,
-            "top_usage": stats.top_usage,
-        })
+        usage_service = await get_usage_service(session=db)
+
+        is_super_admin = "SUPER_ADMIN" in current_user.roles
+        permission_service = PermissionService(db)
+        accessible_gateway_ids = await permission_service.get_accessible_gateways(
+            current_user.id
+        )
+
+        if is_super_admin or not accessible_gateway_ids:
+            stats = await usage_service.get_all_usage_stats()
+        else:
+            stats = await usage_service.get_usage_stats_for_gateways(
+                accessible_gateway_ids
+            )
+
+        return Result.success(
+            {
+                "total_keys": stats.total_keys,
+                "total_calls": stats.total_calls,
+                "active_keys": stats.active_keys,
+                "top_usage": stats.top_usage,
+            }
+        )
     except Exception as e:
         logger.error(f"获取使用统计失败: {e}")
         return Result.error("SYSTEM_ERROR", str(e))
@@ -84,36 +100,47 @@ async def get_key_usage_list(
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取各 Key 使用情况列表"""
-    if "SUPER_ADMIN" not in current_user.roles:
-        return Result.error("FORBIDDEN", "需要超级管理员权限")
-    
     try:
         usage_service = await get_usage_service(session=db)
-        
+
+        is_super_admin = "SUPER_ADMIN" in current_user.roles
+        permission_service = PermissionService(db)
+
+        accessible_gateway_ids = await permission_service.get_accessible_gateways(
+            current_user.id
+        )
+
         stmt = select(McpGatewayAuth).where(McpGatewayAuth.status == 1)
+
         if gateway_id:
             stmt = stmt.where(McpGatewayAuth.gateway_id == gateway_id)
-        
+            if not is_super_admin and gateway_id not in accessible_gateway_ids:
+                return Result.success([])
+        elif not is_super_admin and accessible_gateway_ids:
+            stmt = stmt.where(McpGatewayAuth.gateway_id.in_(accessible_gateway_ids))
+
         result = await db.execute(stmt)
         keys = result.scalars().all()
-        
+
         key_usage_list = []
         for key in keys:
             usage_info = await usage_service.get_usage_info(
                 gateway_id=key.gateway_id,
                 key_id=key.key_id,
             )
-            key_usage_list.append({
-                "gateway_id": key.gateway_id,
-                "key_id": key.key_id,
-                "key_preview": key.key_preview or f"sk-{key.key_id[:8]}...",
-                "rate_limit": usage_info.limit,
-                "current_count": usage_info.current_count,
-                "remaining": usage_info.remaining,
-                "ttl_seconds": usage_info.ttl_seconds,
-                "window_hours": usage_info.window_hours,
-            })
-        
+            key_usage_list.append(
+                {
+                    "gateway_id": key.gateway_id,
+                    "key_id": key.key_id,
+                    "key_preview": key.key_preview or f"sk-{key.key_id[:8]}...",
+                    "rate_limit": usage_info.limit,
+                    "current_count": usage_info.current_count,
+                    "remaining": usage_info.remaining,
+                    "ttl_seconds": usage_info.ttl_seconds,
+                    "window_hours": usage_info.window_hours,
+                }
+            )
+
         return Result.success(key_usage_list)
     except Exception as e:
         logger.error(f"获取Key使用情况失败: {e}")
@@ -131,29 +158,44 @@ async def get_usage_logs(
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取使用日志明细（分页）"""
-    if "SUPER_ADMIN" not in current_user.roles:
-        return Result.error("FORBIDDEN", "需要超级管理员权限")
-    
     try:
+        is_super_admin = "SUPER_ADMIN" in current_user.roles
+        permission_service = PermissionService(db)
+        accessible_gateway_ids = await permission_service.get_accessible_gateways(
+            current_user.id
+        )
+
         stmt = select(McpUsageLog)
-        
+
         if gateway_id:
             stmt = stmt.where(McpUsageLog.gateway_id == gateway_id)
+            if not is_super_admin and gateway_id not in accessible_gateway_ids:
+                return Result.success(
+                    {
+                        "total": 0,
+                        "page": page,
+                        "page_size": page_size,
+                        "items": [],
+                    }
+                )
+        elif not is_super_admin and accessible_gateway_ids:
+            stmt = stmt.where(McpUsageLog.gateway_id.in_(accessible_gateway_ids))
+
         if key_id:
             stmt = stmt.where(McpUsageLog.key_id == key_id)
         if call_type:
             stmt = stmt.where(McpUsageLog.call_type == call_type)
-        
+
         count_stmt = select(func.count()).select_from(stmt.subquery())
         total_result = await db.execute(count_stmt)
         total = total_result.scalar()
-        
+
         stmt = stmt.order_by(desc(McpUsageLog.call_time))
         stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-        
+
         result = await db.execute(stmt)
         logs = result.scalars().all()
-        
+
         items = [
             {
                 "id": log.id,
@@ -167,13 +209,15 @@ async def get_usage_logs(
             }
             for log in logs
         ]
-        
-        return Result.success({
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "items": items,
-        })
+
+        return Result.success(
+            {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "items": items,
+            }
+        )
     except Exception as e:
         logger.error(f"获取使用日志失败: {e}")
         return Result.error("SYSTEM_ERROR", str(e))
@@ -188,11 +232,11 @@ async def reset_usage(
     """重置使用计数（管理员用）"""
     if "SUPER_ADMIN" not in current_user.roles:
         return Result.error("FORBIDDEN", "需要超级管理员权限")
-    
+
     try:
         usage_service = await get_usage_service()
         success = await usage_service.reset_usage(gateway_id, key_id)
-        
+
         if success:
             logger.info(f"重置使用计数: {gateway_id}/{key_id}")
             return Result.success({"message": "重置成功"})

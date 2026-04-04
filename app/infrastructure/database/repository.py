@@ -27,6 +27,7 @@ from app.infrastructure.database.models import (
     SysPermission,
     SysRolePermission,
     SysGatewayPermission,
+    SysRoleBusinessLine,
     SysLoginLog,
     # Business Line models (v8.0)
     SysBusinessLine,
@@ -316,6 +317,46 @@ class McpGatewayRepository:
         await self.session.commit()
         return True
 
+    async def update_protocol_http(self, protocol_id: int, **kwargs) -> bool:
+        """更新HTTP协议配置"""
+        stmt = (
+            update(McpProtocolHttp)
+            .where(McpProtocolHttp.protocol_id == protocol_id)
+            .values(**kwargs)
+        )
+        await self.session.execute(stmt)
+        await self.session.commit()
+        return True
+
+    async def delete_protocol_mappings(self, protocol_id: int) -> bool:
+        """删除协议的所有参数映射"""
+        stmt = select(McpProtocolMapping).where(
+            McpProtocolMapping.protocol_id == protocol_id
+        )
+        result = await self.session.execute(stmt)
+        for mapping in result.scalars().all():
+            await self.session.delete(mapping)
+        await self.session.commit()
+        return True
+
+    async def create_protocol_mapping(
+        self, mapping: McpProtocolMapping
+    ) -> McpProtocolMapping:
+        """创建参数映射"""
+        self.session.add(mapping)
+        await self.session.commit()
+        await self.session.refresh(mapping)
+        return mapping
+
+    async def batch_create_protocol_mappings(
+        self, mappings: list[McpProtocolMapping]
+    ) -> bool:
+        """批量创建参数映射"""
+        for mapping in mappings:
+            self.session.add(mapping)
+        await self.session.commit()
+        return True
+
     async def update_tool_call_status(
         self,
         tool_id: int,
@@ -356,6 +397,10 @@ class McpGatewayRepository:
         stmt = select(McpGateway).order_by(McpGateway.id.desc())
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_gateway_by_numeric_id(self, gateway_id: int) -> Optional[McpGateway]:
+        """根据数字ID获取网关"""
+        return await self.session.get(McpGateway, gateway_id)
 
     async def create_gateway(self, gateway: McpGateway) -> McpGateway:
         """创建网关"""
@@ -934,25 +979,70 @@ class RbacRepository:
         await self.session.commit()
         return True
 
-    async def set_role_gateway_permissions(
-        self, role_id: int, permissions: List[dict]
-    ) -> bool:
-        """批量设置角色的网关权限（覆盖）"""
-        # 删除原有权限
-        await self.delete_gateway_permissions_by_role(role_id)
-
-        # 添加新权限
-        for perm in permissions:
+    async def _upsert_gateway_permission(self, role_id: int, perm: dict) -> None:
+        """单条网关权限的 upsert：相同跳过、不存在新增、存在但不同则更新"""
+        new_vals = {
+            "can_create": 1 if perm.get("can_create", False) else 0,
+            "can_read": 1 if perm.get("can_read", False) else 0,
+            "can_update": 1 if perm.get("can_update", False) else 0,
+            "can_delete": 1 if perm.get("can_delete", False) else 0,
+            "can_chat": 1 if perm.get("can_chat", False) else 0,
+        }
+        existing = await self.get_gateway_permission(role_id, perm["gateway_id"])
+        if existing:
+            # 检查是否有变化
+            changed = False
+            for k, v in new_vals.items():
+                if getattr(existing, k) != v:
+                    setattr(existing, k, v)
+                    changed = True
+            # 相同则跳过，不同则已在上面 setattr 更新
+        else:
+            # 不存在则新增
             gp = SysGatewayPermission(
                 role_id=role_id,
                 gateway_id=perm["gateway_id"],
-                can_create=1 if perm.get("can_create", False) else 0,
-                can_read=1 if perm.get("can_read", False) else 0,
-                can_update=1 if perm.get("can_update", False) else 0,
-                can_delete=1 if perm.get("can_delete", False) else 0,
-                can_chat=1 if perm.get("can_chat", False) else 0,
+                **new_vals,
             )
             self.session.add(gp)
+
+    async def set_role_gateway_permissions(
+        self, role_id: int, permissions: List[dict]
+    ) -> bool:
+        """批量设置角色的网关权限（全量覆盖）"""
+        # 获取当前所有权限
+        existing_perms = await self.get_gateway_permissions_by_role(role_id)
+        existing_map = {p.gateway_id: p for p in existing_perms}
+        incoming_ids = {p["gateway_id"] for p in permissions}
+
+        # 删除不在新列表中的权限
+        for gw_id, gp in existing_map.items():
+            if gw_id not in incoming_ids:
+                await self.session.delete(gp)
+
+        # upsert 每条权限
+        for perm in permissions:
+            await self._upsert_gateway_permission(role_id, perm)
+
+        await self.session.commit()
+        return True
+
+    async def set_role_gateway_permissions_scoped(
+        self, role_id: int, permissions: List[dict], scoped_gateway_ids: List[str]
+    ) -> bool:
+        """按范围设置角色的网关权限（仅更新指定网关范围内的权限，保留范围外不变）"""
+        incoming_ids = {p["gateway_id"] for p in permissions}
+
+        # 仅删除范围内、但不在新列表中的权限
+        for gw_id in scoped_gateway_ids:
+            if gw_id not in incoming_ids:
+                existing = await self.get_gateway_permission(role_id, gw_id)
+                if existing:
+                    await self.session.delete(existing)
+
+        # upsert 每条权限
+        for perm in permissions:
+            await self._upsert_gateway_permission(role_id, perm)
 
         await self.session.commit()
         return True
@@ -1138,3 +1228,141 @@ class RbacRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalars().first() is not None
+
+    # ============================================
+    # 网关权限管理
+    # ============================================
+
+    async def get_gateway_permissions_by_role(
+        self, role_id: int
+    ) -> List[SysGatewayPermission]:
+        """获取角色的所有网关权限"""
+        stmt = select(SysGatewayPermission).where(
+            SysGatewayPermission.role_id == role_id
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_gateway_permission(
+        self, role_id: int, gateway_id: str
+    ) -> Optional[SysGatewayPermission]:
+        """获取角色对指定网关的权限"""
+        stmt = select(SysGatewayPermission).where(
+            and_(
+                SysGatewayPermission.role_id == role_id,
+                SysGatewayPermission.gateway_id == gateway_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def _upsert_gateway_permission(self, role_id: int, perm: dict) -> None:
+        """单条网关权限 upsert"""
+        new_vals = {
+            "can_create": 1 if perm.get("can_create", False) else 0,
+            "can_read": 1 if perm.get("can_read", False) else 0,
+            "can_update": 1 if perm.get("can_update", False) else 0,
+            "can_delete": 1 if perm.get("can_delete", False) else 0,
+            "can_chat": 1 if perm.get("can_chat", False) else 0,
+        }
+        existing = await self.get_gateway_permission(role_id, perm["gateway_id"])
+        if existing:
+            for k, v in new_vals.items():
+                if getattr(existing, k) != v:
+                    setattr(existing, k, v)
+        else:
+            gp = SysGatewayPermission(
+                role_id=role_id,
+                gateway_id=perm["gateway_id"],
+                **new_vals,
+            )
+            self.session.add(gp)
+
+    async def set_role_gateway_permissions(
+        self, role_id: int, permissions: List[dict]
+    ) -> bool:
+        """设置角色的网关权限（全量覆盖）"""
+        existing_perms = await self.get_gateway_permissions_by_role(role_id)
+        existing_map = {p.gateway_id: p for p in existing_perms}
+        incoming_ids = {p["gateway_id"] for p in permissions}
+        for gw_id, gp in existing_map.items():
+            if gw_id not in incoming_ids:
+                await self.session.delete(gp)
+        for perm in permissions:
+            await self._upsert_gateway_permission(role_id, perm)
+        await self.session.commit()
+        return True
+
+    async def set_role_gateway_permissions_scoped(
+        self, role_id: int, permissions: List[dict], scoped_gateway_ids: List[str]
+    ) -> bool:
+        """按范围设置角色的网关权限"""
+        incoming_ids = {p["gateway_id"] for p in permissions}
+        for gw_id in scoped_gateway_ids:
+            if gw_id not in incoming_ids:
+                existing = await self.get_gateway_permission(role_id, gw_id)
+                if existing:
+                    await self.session.delete(existing)
+        for perm in permissions:
+            await self._upsert_gateway_permission(role_id, perm)
+        await self.session.commit()
+        return True
+
+    # ============================================
+    # 角色-业务线管理员
+    # ============================================
+
+    async def get_role_bl_admin_ids(self, role_id: int) -> List[int]:
+        """获取角色作为管理员的业务线ID列表"""
+        stmt = select(SysRoleBusinessLine).where(
+            and_(
+                SysRoleBusinessLine.role_id == role_id,
+                SysRoleBusinessLine.is_admin == 1,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return [r.business_line_id for r in result.scalars().all()]
+
+    async def set_role_bl_admin_ids(
+        self, role_id: int, bl_ids: List[int]
+    ) -> bool:
+        """设置角色的业务线管理员权限（upsert：相同跳过、不存在新增、多余删除）"""
+        stmt = select(SysRoleBusinessLine).where(
+            SysRoleBusinessLine.role_id == role_id
+        )
+        result = await self.session.execute(stmt)
+        existing = {r.business_line_id: r for r in result.scalars().all()}
+        incoming = set(bl_ids)
+
+        # 删除不在新列表中的记录
+        for bl_id, record in existing.items():
+            if bl_id not in incoming:
+                await self.session.delete(record)
+
+        # 新增不存在的记录
+        for bl_id in incoming:
+            if bl_id not in existing:
+                rbl = SysRoleBusinessLine(
+                    role_id=role_id,
+                    business_line_id=bl_id,
+                    is_admin=1,
+                )
+                self.session.add(rbl)
+
+        await self.session.commit()
+        return True
+
+    async def get_role_bl_admin_ids_for_user(
+        self, role_ids: List[int]
+    ) -> List[int]:
+        """获取一组角色授予管理员权限的所有业务线ID（去重）"""
+        if not role_ids:
+            return []
+        stmt = select(SysRoleBusinessLine.business_line_id).where(
+            and_(
+                SysRoleBusinessLine.role_id.in_(role_ids),
+                SysRoleBusinessLine.is_admin == 1,
+            )
+        ).distinct()
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())

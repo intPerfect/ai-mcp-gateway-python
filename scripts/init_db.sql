@@ -207,6 +207,7 @@ CREATE TABLE `mcp_protocol_mapping` (
 
 -- 先删除RBAC相关表（按依赖关系倒序删除）
 DROP TABLE IF EXISTS `sys_login_log`;
+DROP TABLE IF EXISTS `sys_role_business_line`;
 DROP TABLE IF EXISTS `sys_gateway_permission`;
 DROP TABLE IF EXISTS `sys_user_business_line`;
 DROP TABLE IF EXISTS `sys_role_permission`;
@@ -362,6 +363,21 @@ CREATE TABLE `sys_gateway_permission` (
   UNIQUE KEY `uk_role_gateway` (`role_id`, `gateway_id`),
   KEY `idx_gateway_id` (`gateway_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网关权限配置';
+
+-- ============================================
+-- 角色-业务线管理员关联表
+-- ============================================
+CREATE TABLE `sys_role_business_line` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `role_id` bigint NOT NULL COMMENT '角色ID',
+  `business_line_id` bigint NOT NULL COMMENT '业务线ID',
+  `is_admin` tinyint(1) DEFAULT 0 COMMENT '是否该业务线管理员: 0-否 1-是',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_role_bl` (`role_id`, `business_line_id`),
+  KEY `idx_role_id` (`role_id`),
+  KEY `idx_bl_id` (`business_line_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='角色-业务线管理员关联表';
 
 -- ============================================
 -- 登录日志表

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from app.infrastructure.database import get_db_session
 from app.infrastructure.database import McpGatewayRepository
-from app.infrastructure.database.models import McpMicroservice, SysBusinessLine
+from app.infrastructure.database.models import McpMicroservice, McpProtocolMapping, SysBusinessLine
 from app.api.schemas.microservice import (
     MicroserviceCreate,
     MicroserviceUpdate,
@@ -410,9 +410,90 @@ async def update_tool_enabled(
         return Result.internal_error(str(e))
 
 
+class ParameterMappingItem(BaseModel):
+    param_location: str  # path/query/body/form/header/file
+    field_name: str
+    field_type: str = "string"
+    field_desc: str = ""
+    is_required: int = 0
+    default_value: Optional[str] = None
+    enum_values: Optional[str] = None
+    example_value: Optional[str] = None
+    sort_order: int = 0
+
+
+class HttpConfigUpdate(BaseModel):
+    http_url: Optional[str] = None
+    http_method: Optional[str] = None
+    http_headers: Optional[str] = None
+    timeout: Optional[int] = None
+    retry_times: Optional[int] = None
+
+
 class ToolUpdateRequest(BaseModel):
     tool_name: Optional[str] = None
     tool_description: Optional[str] = None
+    http_config: Optional[HttpConfigUpdate] = None
+    parameters: Optional[list[ParameterMappingItem]] = None
+
+
+@router.get("/tools/{tool_id}/detail")
+async def get_tool_detail(
+    tool_id: int,
+    current_user: CurrentUser = Depends(require_permission("tool:read")),
+    db: AsyncSession = Depends(get_db_session),
+) -> Result:
+    """获取工具详情（含HTTP配置和参数映射）"""
+    try:
+        repository = McpGatewayRepository(db)
+
+        tool = await repository.get_tool_by_id(tool_id)
+        if not tool:
+            return Result.not_found("工具不存在")
+
+        # 获取HTTP协议配置
+        http_config = await repository.get_protocol_http_by_id(tool.protocol_id)
+        http_data = None
+        if http_config:
+            http_data = {
+                "http_url": http_config.http_url,
+                "http_method": http_config.http_method,
+                "http_headers": http_config.http_headers,
+                "timeout": http_config.timeout,
+                "retry_times": http_config.retry_times,
+            }
+
+        # 获取参数映射
+        mappings = await repository.get_protocol_mappings(tool.protocol_id)
+        params_data = [
+            {
+                "id": m.id,
+                "param_location": m.param_location,
+                "field_name": m.field_name,
+                "field_type": m.field_type,
+                "field_desc": m.field_desc,
+                "is_required": m.is_required,
+                "default_value": m.default_value,
+                "enum_values": m.enum_values,
+                "example_value": m.example_value,
+                "sort_order": m.sort_order,
+            }
+            for m in mappings
+        ]
+
+        return Result.success(
+            {
+                "tool_id": tool.tool_id,
+                "tool_name": tool.tool_name,
+                "tool_description": tool.tool_description,
+                "protocol_id": tool.protocol_id,
+                "http_config": http_data,
+                "parameters": params_data,
+            }
+        )
+    except Exception as e:
+        logger.error(f"获取工具详情失败: {str(e)}")
+        return Result.internal_error(str(e))
 
 
 @router.put("/tools/{tool_id}")
@@ -422,7 +503,7 @@ async def update_tool(
     current_user: CurrentUser = Depends(require_permission("tool:update")),
     db: AsyncSession = Depends(get_db_session),
 ) -> Result:
-    """更新工具信息"""
+    """更新工具信息（含HTTP配置和参数映射）"""
     try:
         repository = McpGatewayRepository(db)
 
@@ -430,14 +511,51 @@ async def update_tool(
         if not tool:
             return Result.not_found("工具不存在")
 
+        # 更新工具基本信息
         update_data = {}
         if request.tool_name is not None:
             update_data["tool_name"] = request.tool_name
         if request.tool_description is not None:
             update_data["tool_description"] = request.tool_description
-
         if update_data:
             await repository.update_tool(tool_id, **update_data)
+
+        # 更新HTTP协议配置
+        if request.http_config is not None:
+            http_update = {}
+            if request.http_config.http_url is not None:
+                http_update["http_url"] = request.http_config.http_url
+            if request.http_config.http_method is not None:
+                http_update["http_method"] = request.http_config.http_method
+            if request.http_config.http_headers is not None:
+                http_update["http_headers"] = request.http_config.http_headers
+            if request.http_config.timeout is not None:
+                http_update["timeout"] = request.http_config.timeout
+            if request.http_config.retry_times is not None:
+                http_update["retry_times"] = request.http_config.retry_times
+            if http_update:
+                await repository.update_protocol_http(tool.protocol_id, **http_update)
+
+        # 更新参数映射（全量替换）
+        if request.parameters is not None:
+            await repository.delete_protocol_mappings(tool.protocol_id)
+            if request.parameters:
+                new_mappings = [
+                    McpProtocolMapping(
+                        protocol_id=tool.protocol_id,
+                        param_location=p.param_location,
+                        field_name=p.field_name,
+                        field_type=p.field_type,
+                        field_desc=p.field_desc,
+                        is_required=p.is_required,
+                        default_value=p.default_value,
+                        enum_values=p.enum_values,
+                        example_value=p.example_value,
+                        sort_order=p.sort_order,
+                    )
+                    for p in request.parameters
+                ]
+                await repository.batch_create_protocol_mappings(new_mappings)
 
         return Result.success(message="更新成功")
     except Exception as e:

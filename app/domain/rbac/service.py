@@ -20,6 +20,7 @@ from app.domain.rbac.models import (
     DataScope, TokenPayload, BusinessLineInfo
 )
 from app.utils.exceptions import AuthException
+from app.infrastructure.cache.redis_client import get_redis, PermissionCache
 
 logger = logging.getLogger(__name__)
 
@@ -116,16 +117,38 @@ class RbacService:
             user_info=user_info
         )
     
+    async def _get_perm_cache(self) -> Optional[PermissionCache]:
+        """获取权限缓存实例，Redis不可用时返回None"""
+        try:
+            redis = await get_redis()
+            return PermissionCache(redis)
+        except Exception:
+            return None
+
     async def get_user_info(self, user_id: int) -> Optional[UserInfo]:
-        """获取用户信息"""
+        """获取用户信息（Cache Aside）"""
+        # 1. 查缓存
+        cache = await self._get_perm_cache()
+        if cache:
+            cached = await cache.get_user_info(user_id)
+            if cached:
+                return UserInfo(**cached)
+
+        # 2. 缓存未命中，查DB
         user = await self.repository.get_user_by_id(user_id)
         if not user:
             return None
-        
+
         roles = await self.repository.get_user_roles(user_id)
         permissions = await self.repository.get_user_permissions(user_id)
-        
-        return await self._build_user_info(user, roles, permissions)
+        user_info = await self._build_user_info(user, roles, permissions)
+
+        # 3. 写入缓存
+        if cache:
+            from dataclasses import asdict
+            await cache.set_user_info(user_id, asdict(user_info))
+
+        return user_info
     
     async def validate_token(self, token: str) -> Optional[TokenPayload]:
         """
@@ -221,6 +244,7 @@ class RbacService:
             avatar=user.avatar,
             status=user.status,
             roles=[r.role_code for r in roles],
+            role_ids=[r.id for r in roles],
             permissions=[p.permission_code for p in permissions],
             business_lines=business_lines,
             managed_business_lines=managed_business_lines,
@@ -246,11 +270,20 @@ class RbacService:
         return result
     
     async def _get_user_managed_business_lines(self, user_id: int) -> List[BusinessLineInfo]:
-        """获取用户管理的业务线列表"""
+        """获取用户管理的业务线列表（包含用户级别 + 角色级别的管理员权限）"""
+        # 用户级别的管理员业务线
         ubls = await self.repository.get_user_managed_business_lines(user_id)
+        managed_bl_ids = set(ubl.business_line_id for ubl in ubls)
+
+        # 角色级别的管理员业务线
+        roles = await self.repository.get_user_roles(user_id)
+        role_ids = [r.id for r in roles]
+        role_bl_admin_ids = await self.repository.get_role_bl_admin_ids_for_user(role_ids)
+        managed_bl_ids.update(role_bl_admin_ids)
+
         result = []
-        for ubl in ubls:
-            bl = await self.repository.get_business_line_by_id(ubl.business_line_id)
+        for bl_id in managed_bl_ids:
+            bl = await self.repository.get_business_line_by_id(bl_id)
             if bl:
                 result.append(BusinessLineInfo(
                     id=bl.id,
@@ -320,6 +353,13 @@ class PermissionService:
     
     def __init__(self, session: AsyncSession):
         self.repository = RbacRepository(session)
+
+    async def _get_perm_cache(self) -> Optional[PermissionCache]:
+        try:
+            redis = await get_redis()
+            return PermissionCache(redis)
+        except Exception:
+            return None
     
     async def check_permission(
         self,
@@ -397,7 +437,7 @@ class PermissionService:
         return False
     
     async def get_accessible_gateways(self, user_id: int) -> List[str]:
-        """获取用户可访问的网关ID列表（基于can_read权限）"""
+        """获取用户可访问的网关ID列表（Cache Aside）"""
         roles = await self.repository.get_user_roles(user_id)
         
         # 超级管理员可访问全部
@@ -405,6 +445,14 @@ class PermissionService:
             if role.role_code == "SUPER_ADMIN":
                 return []  # 空列表表示全部
         
+        # 1. 查缓存
+        cache = await self._get_perm_cache()
+        if cache:
+            cached = await cache.get_accessible_gateways(user_id)
+            if cached is not None:
+                return cached
+        
+        # 2. 缓存未命中，查DB
         gateway_ids = set()
         for role in roles:
             gateway_perms = await self.repository.get_gateway_permissions_by_role(role.id)
@@ -412,7 +460,13 @@ class PermissionService:
                 if gp.can_read and gp.gateway_id:
                     gateway_ids.add(gp.gateway_id)
         
-        return list(gateway_ids)
+        result = list(gateway_ids)
+        
+        # 3. 写入缓存
+        if cache:
+            await cache.set_accessible_gateways(user_id, result)
+        
+        return result
     
     async def check_gateway_permission(
         self, 
@@ -420,13 +474,7 @@ class PermissionService:
         gateway_id: str, 
         permission_type: str = "read"
     ) -> bool:
-        """检查用户对特定网关的权限
-        
-        Args:
-            user_id: 用户ID
-            gateway_id: 网关ID
-            permission_type: 权限类型 (read/create/update/delete/chat)
-        """
+        """检查用户对特定网关的权限（Cache Aside）"""
         roles = await self.repository.get_user_roles(user_id)
         
         # 超级管理员有全部权限
@@ -434,13 +482,36 @@ class PermissionService:
             if role.role_code == "SUPER_ADMIN":
                 return True
         
+        cache = await self._get_perm_cache()
+        
         for role in roles:
-            gateway_perms = await self.repository.get_gateway_permissions_by_role(role.id)
-            for gp in gateway_perms:
-                if gp.gateway_id == gateway_id:
-                    perm_attr = f"can_{permission_type}"
-                    if getattr(gp, perm_attr, False):
-                        return True
+            # 尝试从缓存获取角色网关权限
+            perms_data = None
+            if cache:
+                perms_data = await cache.get_gateway_perms_by_role(role.id)
+            
+            if perms_data is not None:
+                for gp in perms_data:
+                    if gp.get("gateway_id") == gateway_id:
+                        if gp.get(f"can_{permission_type}", False):
+                            return True
+            else:
+                gateway_perms = await self.repository.get_gateway_permissions_by_role(role.id)
+                # 写入缓存
+                if cache and gateway_perms:
+                    perms_list = [
+                        {"gateway_id": gp.gateway_id, "can_create": gp.can_create,
+                         "can_read": gp.can_read, "can_update": gp.can_update,
+                         "can_delete": gp.can_delete, "can_chat": gp.can_chat}
+                        for gp in gateway_perms
+                    ]
+                    await cache.set_gateway_perms_by_role(role.id, perms_list)
+                
+                for gp in gateway_perms:
+                    if gp.gateway_id == gateway_id:
+                        perm_attr = f"can_{permission_type}"
+                        if getattr(gp, perm_attr, False):
+                            return True
         
         return False
 

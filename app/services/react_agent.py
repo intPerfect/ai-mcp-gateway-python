@@ -102,6 +102,9 @@ class AgentSession:
     total_steps: int = 0
     tools_called: List[str] = field(default_factory=list)
 
+    # 允许使用的工具名称列表（基于微服务筛选）
+    allowed_tool_names: Optional[List[str]] = None
+
     # 累积内容
     accumulated_thinking: str = ""
     accumulated_text: str = ""
@@ -138,6 +141,7 @@ class ReActAgent:
         api_type: str = "anthropic",
         base_url: str = "",
         model_name: str = "",
+        allowed_tool_names: Optional[List[str]] = None,
     ) -> AgentSession:
         """创建会话"""
         session = AgentSession(
@@ -150,6 +154,7 @@ class ReActAgent:
             api_type=api_type,
             base_url=base_url,
             model_name=model_name,
+            allowed_tool_names=allowed_tool_names,
         )
         self.sessions[session_id] = session
         logger.info(
@@ -263,6 +268,7 @@ class ReActAgent:
                 session.message_history.get_messages_for_api(),
                 tools_enabled=True,
                 api_key=session.llm_key or None,
+                allowed_names=session.allowed_tool_names,
             ):
                 event_type = llm_event.get("type")
 

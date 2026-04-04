@@ -300,6 +300,56 @@ class UsageService:
             window_hours=settings.usage_limit_window_hours,
         )
 
+    async def get_usage_stats_for_gateways(self, gateway_ids: List[str]) -> UsageStats:
+        """
+        获取指定网关列表的使用统计
+        """
+        redis_client = await self._get_redis_client()
+
+        all_keys = []
+        for gateway_id in gateway_ids:
+            pattern = f"usage:{gateway_id}:*"
+            keys = await self._redis.keys(pattern)
+            all_keys.extend(keys)
+
+        if not all_keys:
+            return UsageStats(
+                total_keys=0,
+                total_calls=0,
+                active_keys=0,
+                top_usage=[],
+            )
+
+        stats = await redis_client.get_usage_stats_batch(all_keys)
+
+        total_calls = sum(s["count"] for s in stats.values())
+        active_keys = len([k for k, s in stats.items() if s["count"] > 0])
+
+        top_usage = []
+        sorted_keys = sorted(stats.items(), key=lambda x: x[1]["count"], reverse=True)[
+            :10
+        ]
+        for key, stat in sorted_keys:
+            parts = key.split(":")
+            if len(parts) >= 3:
+                gateway_id = parts[1]
+                key_id = parts[2]
+                top_usage.append(
+                    {
+                        "gateway_id": gateway_id,
+                        "key_id": key_id,
+                        "count": stat["count"],
+                        "ttl": stat["ttl"],
+                    }
+                )
+
+        return UsageStats(
+            total_keys=len(all_keys),
+            total_calls=total_calls,
+            active_keys=active_keys,
+            top_usage=top_usage,
+        )
+
     async def get_all_usage_stats(self) -> UsageStats:
         """
         获取全局使用统计（管理员用）

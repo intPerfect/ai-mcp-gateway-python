@@ -3,8 +3,9 @@
 Redis Client - Redis connection management
 """
 
+import json
 import logging
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from redis import asyncio as aioredis
 from redis.asyncio import Redis
 from app.config import get_settings
@@ -130,3 +131,92 @@ class RedisClient:
             stats[key] = {"count": count, "ttl": ttl}
 
         return stats
+
+
+class PermissionCache:
+    """
+    用户权限 Redis 缓存 (Cache Aside 算法)
+
+    缓存结构:
+      perm:user_info:{user_id}           -> UserInfo JSON
+      perm:accessible_gateways:{user_id} -> [gateway_id, ...]
+      perm:gateway_perm:{role_id}        -> [{gateway_id, can_*}, ...]
+
+    策略:
+      读: 先查缓存 -> 命中返回 -> 未命中查DB并写入缓存
+      写: 先写DB -> 再失效缓存
+    """
+
+    PREFIX = "perm"
+    DEFAULT_TTL = 3600  # 1小时
+
+    def __init__(self, redis: Redis):
+        self.redis = redis
+
+    # ---- key 生成 ----
+    @staticmethod
+    def _key_user_info(user_id: int) -> str:
+        return f"perm:user_info:{user_id}"
+
+    @staticmethod
+    def _key_accessible_gateways(user_id: int) -> str:
+        return f"perm:accessible_gateways:{user_id}"
+
+    @staticmethod
+    def _key_gateway_perm(role_id: int) -> str:
+        return f"perm:gateway_perm:{role_id}"
+
+    # ---- 通用读写 ----
+    async def _get_json(self, key: str) -> Optional[Any]:
+        data = await self.redis.get(key)
+        if data is not None:
+            return json.loads(data)
+        return None
+
+    async def _set_json(self, key: str, value: Any, ttl: int = None) -> None:
+        await self.redis.set(key, json.dumps(value, default=str), ex=ttl or self.DEFAULT_TTL)
+
+    # ---- UserInfo 缓存 ----
+    async def get_user_info(self, user_id: int) -> Optional[Dict]:
+        return await self._get_json(self._key_user_info(user_id))
+
+    async def set_user_info(self, user_id: int, user_info_dict: Dict) -> None:
+        await self._set_json(self._key_user_info(user_id), user_info_dict)
+
+    async def invalidate_user_info(self, user_id: int) -> None:
+        await self.redis.delete(self._key_user_info(user_id))
+
+    # ---- 可访问网关 缓存 ----
+    async def get_accessible_gateways(self, user_id: int) -> Optional[List[str]]:
+        return await self._get_json(self._key_accessible_gateways(user_id))
+
+    async def set_accessible_gateways(self, user_id: int, gateway_ids: List[str]) -> None:
+        await self._set_json(self._key_accessible_gateways(user_id), gateway_ids)
+
+    async def invalidate_accessible_gateways(self, user_id: int) -> None:
+        await self.redis.delete(self._key_accessible_gateways(user_id))
+
+    # ---- 角色网关权限 缓存 ----
+    async def get_gateway_perms_by_role(self, role_id: int) -> Optional[List[Dict]]:
+        return await self._get_json(self._key_gateway_perm(role_id))
+
+    async def set_gateway_perms_by_role(self, role_id: int, perms: List[Dict]) -> None:
+        await self._set_json(self._key_gateway_perm(role_id), perms)
+
+    async def invalidate_gateway_perms_by_role(self, role_id: int) -> None:
+        await self.redis.delete(self._key_gateway_perm(role_id))
+
+    # ---- 批量失效 ----
+    async def invalidate_role_related(self, role_id: int) -> None:
+        """角色权限变更时，失效该角色的缓存 + 所有用户的可访问网关缓存"""
+        await self.invalidate_gateway_perms_by_role(role_id)
+        keys = await self.redis.keys("perm:accessible_gateways:*")
+        if keys:
+            await self.redis.delete(*keys)
+
+    async def invalidate_all_user_caches(self) -> None:
+        """失效所有用户相关缓存"""
+        for pattern in ["perm:user_info:*", "perm:accessible_gateways:*", "perm:gateway_perm:*"]:
+            keys = await self.redis.keys(pattern)
+            if keys:
+                await self.redis.delete(*keys)

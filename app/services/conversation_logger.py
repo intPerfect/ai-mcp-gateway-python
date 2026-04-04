@@ -50,7 +50,9 @@ class ConversationEvent:
 class ConversationLogger:
     """对话日志记录器"""
     
-    def __init__(self, log_dir: str = "logs/conversations"):
+    def __init__(self, log_dir: str = None):
+        if log_dir is None:
+            log_dir = Path(__file__).parent.parent.parent.parent / "logs" / "conversations"
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self._session_logs: Dict[str, List[ConversationEvent]] = {}

@@ -41,9 +41,12 @@ class LLMService:
         self.model = model_name or settings.llm_model
         self.api_key = api_key
 
-    def get_tools(self) -> List[Dict[str, Any]]:
-        """获取所有工具定义（从mcp_tool_registry获取）"""
-        return mcp_tool_registry.get_tool_definitions()
+    def get_tools(self, allowed_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """获取工具定义，可按名称筛选"""
+        all_tools = mcp_tool_registry.get_tool_definitions()
+        if allowed_names is not None:
+            return [t for t in all_tools if t.get('name') in allowed_names]
+        return all_tools
 
     def _convert_to_anthropic_messages(
         self,
@@ -364,6 +367,7 @@ class LLMService:
         messages: List[Dict[str, Any]],
         tools_enabled: bool = True,
         api_key: Optional[str] = None,
+        allowed_names: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """流式调用LLM API"""
         effective_api_key = api_key or self.api_key or settings.llm_api_key
@@ -372,17 +376,18 @@ class LLMService:
             return
 
         if self.api_type == "openai":
-            async for event in self._chat_stream_openai(messages, tools_enabled, effective_api_key):
+            async for event in self._chat_stream_openai(messages, tools_enabled, effective_api_key, allowed_names):
                 yield event
         else:
-            async for event in self._chat_stream_anthropic(messages, tools_enabled, effective_api_key):
+            async for event in self._chat_stream_anthropic(messages, tools_enabled, effective_api_key, allowed_names):
                 yield event
 
     async def _chat_stream_anthropic(
         self,
         messages: List[Dict[str, Any]],
         tools_enabled: bool,
-        api_key: str
+        api_key: str,
+        allowed_names: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """流式调用Anthropic API"""
         try:
@@ -402,7 +407,7 @@ class LLMService:
             if system_prompt:
                 request_kwargs["system"] = system_prompt
             if tools_enabled:
-                tools = self.get_tools()
+                tools = self.get_tools(allowed_names=allowed_names)
                 request_kwargs["tools"] = tools
                 tool_names = [t.get('name') for t in tools]
                 logger.info(f"启用工具调用，发送 {len(tools)} 个工具: {', '.join(tool_names)}")
@@ -583,7 +588,8 @@ class LLMService:
         self,
         messages: List[Dict[str, Any]],
         tools_enabled: bool,
-        api_key: str
+        api_key: str,
+        allowed_names: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """流式调用OpenAI兼容API"""
         try:
@@ -602,7 +608,7 @@ class LLMService:
             }
 
             if tools_enabled:
-                tools = self.get_tools()
+                tools = self.get_tools(allowed_names=allowed_names)
                 if tools:
                     request_kwargs["tools"] = self._convert_tools_to_openai_format(tools)
                     logger.info(f"启用工具调用，发送 {len(tools)} 个工具")
