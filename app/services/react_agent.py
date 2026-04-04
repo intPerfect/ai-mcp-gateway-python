@@ -216,6 +216,13 @@ class ReActAgent:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """ReAct 主循环"""
 
+        # 创建会话级别的 LLMService，避免在循环中重复创建
+        session_llm_service = LLMService(
+            api_type=session.api_type,
+            base_url=session.base_url,
+            model_name=session.model_name,
+        )
+
         while session.total_steps < self.MAX_STEPS:
             session.state = AgentState.THINKING
 
@@ -256,11 +263,6 @@ class ReActAgent:
             )
 
             # 流式调用 LLM（使用会话特定的配置）
-            session_llm_service = LLMService(
-                api_type=session.api_type,
-                base_url=session.base_url,
-                model_name=session.model_name,
-            )
             async for llm_event in session_llm_service.chat_stream(
                 session.message_history.get_messages_for_api(),
                 tools_enabled=True,

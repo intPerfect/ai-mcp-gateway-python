@@ -75,7 +75,7 @@ async def list_tools(
         return Result.success({"tools": data, "total": len(data)})
     except Exception as e:
         logger.error(f"获取工具列表失败: {str(e)}")
-        return Result.error("SYSTEM_ERROR", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.get("/tools/status")
@@ -126,7 +126,7 @@ async def get_tools_status(
         return Result.success({"tools": data, "total": len(data)})
     except Exception as e:
         logger.error(f"获取工具状态失败: {str(e)}")
-        return Result.error("SYSTEM_ERROR", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.post("/tools/reload")
@@ -153,7 +153,7 @@ async def reload_tools(
         return Result.success(result)
     except Exception as e:
         logger.error(f"重新加载工具失败: {str(e)}")
-        return Result.error("SYSTEM_ERROR", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.get("/tools/{tool_name}/status")
@@ -206,7 +206,7 @@ async def get_tool_status(
         )
     except Exception as e:
         logger.error(f"获取工具状态失败: {str(e)}")
-        return Result.error("SYSTEM_ERROR", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.post("/tools/{tool_name}/health-check")
@@ -258,4 +258,4 @@ async def health_check_tool(
         )
     except Exception as e:
         logger.error(f"健康检查失败: {str(e)}")
-        return Result.error("SYSTEM_ERROR", str(e))
+        return Result.internal_error(str(e))

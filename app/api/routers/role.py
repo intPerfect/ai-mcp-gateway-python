@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.connection import get_db_session
-from app.infrastructure.database.repository import RbacRepository, McpGatewayRepository
+from app.infrastructure.database.repository import RbacRepository
+from app.infrastructure.database.repositories import GatewayRepository
 from app.infrastructure.database.models import SysRole
 from app.infrastructure.cache.redis_client import get_redis, PermissionCache
 from app.domain.rbac import RoleInfo, RoleCreate, RoleUpdate, DataPermissionSet
@@ -410,7 +411,7 @@ async def get_role_gateway_permissions(
     - 业务线管理员：只能看到自己业务线范围内的网关权限
     """
     repo = RbacRepository(session)
-    mcp_repo = McpGatewayRepository(session)
+    gw_repo = GatewayRepository(session)
     role = await repo.get_role_by_id(role_id)
 
     if not role:
@@ -426,7 +427,7 @@ async def get_role_gateway_permissions(
             return Result.fail(code="403", message="无权查看该角色")
 
     # 获取所有网关和业务线
-    gateways = await mcp_repo.get_all_gateways()
+    gateways = await gw_repo.get_all_gateways()
     business_lines = await repo.get_all_business_lines()
     bl_map = {bl.id: bl.line_name for bl in business_lines}
 
@@ -479,7 +480,7 @@ async def set_role_gateway_permissions(
     - 业务线管理员：只能设置自己业务线范围内的网关权限
     """
     repo = RbacRepository(session)
-    mcp_repo = McpGatewayRepository(session)
+    gw_repo = GatewayRepository(session)
     role = await repo.get_role_by_id(role_id)
 
     if not role:
@@ -496,7 +497,7 @@ async def set_role_gateway_permissions(
             return Result.fail(code="403", message="无权修改该角色")
 
     # 获取所有网关
-    gateways = await mcp_repo.get_all_gateways()
+    gateways = await gw_repo.get_all_gateways()
     gateway_bl_map = {gw.gateway_id: gw.business_line_id for gw in gateways}
 
     # 转换请求格式，业务线管理员只能设置自己业务线范围内的网关

@@ -4,10 +4,12 @@ API Dependencies - 统一的权限检查依赖
 """
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.rbac.service import PermissionService
 from app.domain.rbac import UserInfo as CurrentUser
+from app.infrastructure.database.models import McpGatewayMicroservice
 
 
 async def require_gateway_permission(
@@ -56,3 +58,42 @@ async def get_accessible_gateway_ids(
         return None
     rbac_service = PermissionService(db)
     return await rbac_service.get_accessible_gateways(current_user.id)
+
+
+async def check_tool_gateway_permission(
+    tool, permission_type: str, current_user: CurrentUser, db: AsyncSession
+):
+    """检查用户对工具所属网关的权限，无权限时抛出 HTTPException 403"""
+    if "SUPER_ADMIN" in current_user.roles:
+        return
+    await require_gateway_permission(tool.gateway_id, permission_type, current_user, db)
+
+
+async def check_microservice_gateway_permission(
+    microservice_id: int, permission_type: str, current_user: CurrentUser, db: AsyncSession
+):
+    """检查用户对微服务绑定网关的权限（任一绑定网关有权限即可），无权限时抛出 HTTPException 403"""
+    if "SUPER_ADMIN" in current_user.roles:
+        return
+    # 查询微服务绑定的所有网关
+    stmt = select(McpGatewayMicroservice.gateway_id).where(
+        McpGatewayMicroservice.microservice_id == microservice_id,
+        McpGatewayMicroservice.status == 1,
+    )
+    result = await db.execute(stmt)
+    bound_gw_ids = [row[0] for row in result.all()]
+
+    if not bound_gw_ids:
+        # 微服务未绑定任何网关，仅依赖角色权限
+        return
+
+    # 检查用户对任一绑定网关是否有权限
+    rbac_service = PermissionService(db)
+    for gw_id in bound_gw_ids:
+        has_perm = await rbac_service.check_gateway_permission(
+            current_user.id, gw_id, permission_type
+        )
+        if has_perm:
+            return
+
+    raise HTTPException(status_code=403, detail="无权限操作此微服务关联的网关")

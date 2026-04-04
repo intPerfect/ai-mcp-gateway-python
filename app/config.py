@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # Session
     session_timeout_minutes: int = 30
 
+    # JWT
+    jwt_secret_key: str = "ai-mcp-gateway-secret-key-2026"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_hours: int = 24
+
     # LLM API
     llm_api_base_url: str = "https://api.minimaxi.com/v1"
     llm_model: str = "MiniMax-M2.5"

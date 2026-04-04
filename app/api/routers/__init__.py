@@ -9,6 +9,8 @@ from app.api.routers.tools import router as tools_router
 from app.api.routers.openapi import router as openapi_router
 from app.api.routers.microservice import router as microservice_router
 from app.api.routers.gateway import router as gateway_router
+from app.api.routers.gateway_keys import router as gateway_keys_router
+from app.api.routers.llm_config import router as llm_config_router
 from app.api.routers.apikeys import router as apikeys_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.user import router as user_router
@@ -23,6 +25,8 @@ __all__ = [
     "openapi_router",
     "microservice_router",
     "gateway_router",
+    "gateway_keys_router",
+    "llm_config_router",
     "apikeys_router",
     "auth_router",
     "user_router",

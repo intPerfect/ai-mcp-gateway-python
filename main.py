@@ -3,72 +3,15 @@ FastAPI Application Entry Point for MCP Gateway
 """
 
 import logging
-import logging.config
-import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
-LOGS_DIR = Path(__file__).parent.parent / "logs"
-LOGS_DIR.mkdir(exist_ok=True)
+from app.logging_config import setup_logging
 
-LOGGING_CONFIG = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {
-        "default": {
-            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        },
-    },
-    "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-            "formatter": "default",
-        },
-        "gateway_file": {
-            "class": "logging.handlers.RotatingFileHandler",
-            "filename": str(LOGS_DIR / "gateway.log"),
-            "maxBytes": 10485760,
-            "backupCount": 5,
-            "formatter": "default",
-            "encoding": "utf-8",
-        },
-        "uvicorn_file": {
-            "class": "logging.handlers.RotatingFileHandler",
-            "filename": str(LOGS_DIR / "uvicorn.log"),
-            "maxBytes": 10485760,
-            "backupCount": 5,
-            "formatter": "default",
-            "encoding": "utf-8",
-        },
-    },
-    "loggers": {
-        "": {
-            "handlers": ["console", "gateway_file"],
-            "level": logging.INFO,
-        },
-        "uvicorn": {
-            "handlers": ["console", "uvicorn_file"],
-            "level": logging.INFO,
-            "propagate": False,
-        },
-        "uvicorn.error": {
-            "handlers": ["console", "uvicorn_file"],
-            "level": logging.INFO,
-            "propagate": False,
-        },
-        "uvicorn.access": {
-            "handlers": ["console", "uvicorn_file"],
-            "level": logging.INFO,
-            "propagate": False,
-        },
-    },
-}
-
-logging.config.dictConfig(LOGGING_CONFIG)
+setup_logging()
 logger = logging.getLogger(__name__)
 from app.config import get_settings
 from app.api.routers import (
@@ -78,6 +21,8 @@ from app.api.routers import (
     openapi_router,
     microservice_router,
     gateway_router,
+    gateway_keys_router,
+    llm_config_router,
     auth_router,
     user_router,
     role_router,
@@ -143,6 +88,8 @@ app.include_router(mcp_router, prefix="/api-gateway", tags=["MCP Gateway"])
 app.include_router(tools_router, prefix="/api", tags=["Tools"])
 app.include_router(openapi_router, prefix="/api", tags=["OpenAPI Import"])
 app.include_router(gateway_router, prefix="/api", tags=["Gateway Management"])
+app.include_router(gateway_keys_router, prefix="/api", tags=["Gateway Keys"])
+app.include_router(llm_config_router, prefix="/api", tags=["LLM Config"])
 app.include_router(microservice_router, prefix="/api", tags=["Microservice"])
 app.include_router(chat_router, prefix="/api/chat", tags=["Chat"])
 app.include_router(auth_router, tags=["Auth"])
@@ -175,9 +122,7 @@ if __name__ == "__main__":
     port = settings.server_port
     PortManager.kill_port(port)
 
-    # 设置环境变量控制热更新
     import os
-
     reload = os.getenv("RELOAD", "true").lower() in ("true", "1", "yes")
 
     uvicorn.run(

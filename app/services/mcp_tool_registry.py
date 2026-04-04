@@ -11,7 +11,8 @@ from dataclasses import dataclass
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database import McpGatewayRepository, async_session_factory
+from app.infrastructure.database import async_session_factory
+from app.infrastructure.database.repositories import ToolRepository, MicroserviceRepository
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class McpToolRegistry:
     def __init__(self):
         self._tools: Dict[str, ToolDefinition] = {}
         self._tool_status: Dict[str, ToolStatus] = {}
-        self._repository: Optional[McpGatewayRepository] = None
+        self._repository: Optional[ToolRepository] = None
     
     def register_tool(
         self,
@@ -215,7 +216,7 @@ class McpToolRegistry:
             gateway_id: 网关ID，None 表示加载所有工具
             force_reload: 是否强制重新加载（会清空现有工具）
         """
-        self._repository = McpGatewayRepository(db_session)
+        self._repository = ToolRepository(db_session)
         
         # 强制重新加载时清空现有工具
         if force_reload:
@@ -361,7 +362,7 @@ class McpToolRegistry:
         try:
             async with async_session_factory() as session:
                 async with session.begin():
-                    repo = McpGatewayRepository(session)
+                    repo = ToolRepository(session)
                     # 先获取当前状态
                     tool = await repo.get_tool_by_id(tool_id)
                     if not tool:
@@ -557,6 +558,47 @@ class McpToolRegistry:
                 parts[param_location][field_name] = value
         
         return parts
+
+    async def get_tools_with_microservice(
+        self, microservice_ids: Optional[List[int]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        获取带 microservice_name 的工具列表
+
+        Args:
+            microservice_ids: 可选，筛选指定微服务的工具。为 None 时返回所有工具
+        """
+        async with async_session_factory() as session:
+            tool_repo = ToolRepository(session)
+            ms_repo = MicroserviceRepository(session)
+            all_tools = await tool_repo.get_all_tools()
+            enabled_tools = [t for t in all_tools if t.enabled == 1]
+            all_microservices = await ms_repo.get_all_microservices()
+            ms_map = {ms.id: ms.name for ms in all_microservices}
+
+            result = []
+            for tool in enabled_tools:
+                # 过滤：必须有微服务绑定
+                if not tool.microservice_id or tool.microservice_id not in ms_map:
+                    continue
+
+                # 如果指定了微服务筛选，只返回选中微服务的工具
+                if microservice_ids and tool.microservice_id not in microservice_ids:
+                    continue
+
+                tool_def = self.get_tool(tool.tool_name)
+                if tool_def:
+                    result.append(
+                        {
+                            "name": tool_def.name,
+                            "description": tool_def.description,
+                            "input_schema": tool_def.input_schema,
+                            "microservice_name": ms_map[tool.microservice_id],
+                        }
+                    )
+
+            logger.info(f"加载工具: {len(result)} 个, 筛选微服务: {microservice_ids}")
+            return result
 
 
 # 全局单例

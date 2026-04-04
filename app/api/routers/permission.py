@@ -8,7 +8,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.connection import get_db_session
-from app.infrastructure.database.repository import RbacRepository, McpGatewayRepository
+from app.infrastructure.database.repository import RbacRepository
+from app.infrastructure.database.repositories import (
+    MicroserviceRepository, GatewayRepository, BusinessLineRepository,
+)
 from app.infrastructure.database.models import SysPermission, SysResource
 from app.domain.rbac import (
     PermissionInfo, ResourceInfo, 
@@ -202,15 +205,17 @@ async def get_data_scope_tree(
     session: AsyncSession = Depends(get_db_session)
 ):
     """获取数据权限树（业务线-微服务-网关）"""
-    mcp_repo = McpGatewayRepository(session)
+    ms_repo = MicroserviceRepository(session)
+    gw_repo = GatewayRepository(session)
+    bl_repo = BusinessLineRepository(session)
     
     # 获取所有微服务
-    microservices = await mcp_repo.get_all_microservices()
+    microservices = await ms_repo.get_all_microservices()
     # 获取所有网关
-    gateways = await mcp_repo.get_all_gateways()
+    gateways = await gw_repo.get_all_gateways()
     
     # 获取业务线映射 {id: name}
-    all_bl = await mcp_repo.get_all_business_lines()
+    all_bl = await bl_repo.get_all_business_lines()
     bl_map = {bl.id: bl.line_name for bl in all_bl}
     
     # 按业务线分组
@@ -276,15 +281,17 @@ async def get_data_scope_options(
     session: AsyncSession = Depends(get_db_session)
 ):
     """获取数据权限选项（业务线、网关列表）"""
-    mcp_repo = McpGatewayRepository(session)
+    ms_repo = MicroserviceRepository(session)
+    gw_repo = GatewayRepository(session)
+    bl_repo = BusinessLineRepository(session)
     
     # 获取所有微服务
-    microservices = await mcp_repo.get_all_microservices()
+    microservices = await ms_repo.get_all_microservices()
     # 获取所有网关
-    gateways = await mcp_repo.get_all_gateways()
+    gateways = await gw_repo.get_all_gateways()
     
     # 获取业务线映射
-    all_bl = await mcp_repo.get_all_business_lines()
+    all_bl = await bl_repo.get_all_business_lines()
     bl_map = {bl.id: bl.line_name for bl in all_bl}
     
     # 获取业务线列表（去重）

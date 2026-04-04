@@ -5,12 +5,12 @@ Microservice Router - 微服务管理路由
 
 import logging
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import get_db_session
-from app.infrastructure.database import McpGatewayRepository
+from app.infrastructure.database.repositories import MicroserviceRepository, ToolRepository
 from app.infrastructure.database.models import (
     McpMicroservice, McpProtocolMapping, SysBusinessLine, McpGatewayMicroservice,
 )
@@ -29,57 +29,13 @@ from app.api.routers.auth import (
 )
 from app.api.dependencies import (
     get_accessible_gateway_ids,
-    require_gateway_permission,
+    check_tool_gateway_permission as _check_tool_gateway_permission,
+    check_microservice_gateway_permission as _check_microservice_gateway_permission,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-# ============================================
-# 网关权限辅助函数
-# ============================================
-
-
-async def _check_tool_gateway_permission(
-    tool, permission_type: str, current_user: CurrentUser, db: AsyncSession
-):
-    """检查用户对工具所属网关的权限，无权限时抛出 HTTPException 403"""
-    if "SUPER_ADMIN" in current_user.roles:
-        return
-    await require_gateway_permission(tool.gateway_id, permission_type, current_user, db)
-
-
-async def _check_microservice_gateway_permission(
-    microservice_id: int, permission_type: str, current_user: CurrentUser, db: AsyncSession
-):
-    """检查用户对微服务绑定网关的权限（任一绑定网关有权限即可），无权限时抛出 HTTPException 403"""
-    if "SUPER_ADMIN" in current_user.roles:
-        return
-    # 查询微服务绑定的所有网关
-    stmt = select(McpGatewayMicroservice.gateway_id).where(
-        McpGatewayMicroservice.microservice_id == microservice_id,
-        McpGatewayMicroservice.status == 1,
-    )
-    result = await db.execute(stmt)
-    bound_gw_ids = [row[0] for row in result.all()]
-
-    if not bound_gw_ids:
-        # 微服务未绑定任何网关，仅依赖角色权限
-        return
-
-    # 检查用户对任一绑定网关是否有权限
-    from app.domain.rbac.service import PermissionService
-    rbac_service = PermissionService(db)
-    for gw_id in bound_gw_ids:
-        has_perm = await rbac_service.check_gateway_permission(
-            current_user.id, gw_id, permission_type
-        )
-        if has_perm:
-            return
-
-    raise HTTPException(status_code=403, detail="无权限操作此微服务关联的网关")
 
 
 # ============================================
@@ -94,8 +50,9 @@ async def list_microservices(
 ) -> PageResult:
     """获取微服务列表（按网关查看权限过滤）"""
     try:
-        repository = McpGatewayRepository(db)
-        microservices = await repository.get_all_microservices()
+        ms_repo = MicroserviceRepository(db)
+        tool_repo = ToolRepository(db)
+        microservices = await ms_repo.get_all_microservices()
 
         # 基于网关 can_read 权限过滤微服务
         accessible_gw_ids = await get_accessible_gateway_ids(current_user, db)
@@ -119,7 +76,7 @@ async def list_microservices(
         # 获取每个微服务的工具数量
         result = []
         for ms in microservices:
-            tools = await repository.get_tools_by_microservice(ms.id)
+            tools = await tool_repo.get_tools_by_microservice(ms.id)
 
             # 获取业务线名称
             if ms.business_line_id and ms.business_line_id not in business_line_map:
@@ -164,10 +121,10 @@ async def create_microservice(
 ) -> Result:
     """创建微服务"""
     try:
-        repository = McpGatewayRepository(db)
+        ms_repo = MicroserviceRepository(db)
 
         # 检查名称是否已存在
-        existing = await repository.get_microservice_by_name(request.name)
+        existing = await ms_repo.get_microservice_by_name(request.name)
         if existing:
             return Result.error("4001", f"微服务名称已存在: {request.name}")
 
@@ -180,12 +137,12 @@ async def create_microservice(
             status=1,
         )
 
-        created = await repository.create_microservice(microservice)
+        created = await ms_repo.create_microservice(microservice)
 
         # 获取业务线名称
         bl_name = None
         if created.business_line_id:
-            bl = await repository.get_business_line_by_id(created.business_line_id)
+            bl = await db.get(SysBusinessLine, created.business_line_id)
             bl_name = bl.line_name if bl else None
 
         return Result.success(
@@ -211,18 +168,18 @@ async def update_microservice(
 ) -> Result:
     """更新微服务"""
     try:
-        repository = McpGatewayRepository(db)
+        ms_repo = MicroserviceRepository(db)
 
         # 检查网关级别权限（can_update）
         await _check_microservice_gateway_permission(microservice_id, "update", current_user, db)
 
         # 如果要更新名称，检查是否重复
         if request.name:
-            existing = await repository.get_microservice_by_name(request.name)
+            existing = await ms_repo.get_microservice_by_name(request.name)
             if existing and existing.id != microservice_id:
                 return Result.error("4001", f"微服务名称已存在: {request.name}")
 
-        updated = await repository.update_microservice(
+        updated = await ms_repo.update_microservice(
             microservice_id,
             name=request.name,
             http_base_url=request.http_base_url,
@@ -237,7 +194,7 @@ async def update_microservice(
         # 获取业务线名称
         bl_name = None
         if updated.business_line_id:
-            bl = await repository.get_business_line_by_id(updated.business_line_id)
+            bl = await db.get(SysBusinessLine, updated.business_line_id)
             bl_name = bl.line_name if bl else None
 
         return Result.success(
@@ -263,13 +220,13 @@ async def delete_microservice(
 ) -> Result:
     """删除微服务"""
     try:
-        repository = McpGatewayRepository(db)
+        ms_repo = MicroserviceRepository(db)
 
         # 检查网关级别权限（can_delete）
         await _check_microservice_gateway_permission(microservice_id, "delete", current_user, db)
 
         # 删除微服务
-        success = await repository.delete_microservice(microservice_id)
+        success = await ms_repo.delete_microservice(microservice_id)
 
         if not success:
             return Result.not_found("微服务不存在")
@@ -288,12 +245,12 @@ async def check_microservice_health(
 ) -> Result:
     """微服务健康检查"""
     try:
-        repository = McpGatewayRepository(db)
+        ms_repo = MicroserviceRepository(db)
 
         # 检查网关级别权限（can_read）
         await _check_microservice_gateway_permission(microservice_id, "read", current_user, db)
 
-        microservice = await repository.get_microservice_by_id(microservice_id)
+        microservice = await ms_repo.get_microservice_by_id(microservice_id)
 
         if not microservice:
             return Result.not_found("微服务不存在")
@@ -323,7 +280,7 @@ async def check_microservice_health(
             check_message = str(e)
 
         # 更新健康状态
-        await repository.update_microservice_health(microservice_id, health_status)
+        await ms_repo.update_microservice_health(microservice_id, health_status)
 
         return Result.success(
             {"health_status": health_status, "message": check_message}
@@ -341,16 +298,17 @@ async def get_microservice_tools(
 ) -> PageResult:
     """获取微服务的工具列表"""
     try:
-        repository = McpGatewayRepository(db)
+        ms_repo = MicroserviceRepository(db)
+        tool_repo = ToolRepository(db)
 
         # 检查网关级别权限（can_read）
         await _check_microservice_gateway_permission(microservice_id, "read", current_user, db)
 
-        microservice = await repository.get_microservice_by_id(microservice_id)
+        microservice = await ms_repo.get_microservice_by_id(microservice_id)
         if not microservice:
             return PageResult.of(data=[], total=0, message="微服务不存在")
 
-        tools = await repository.get_tools_by_microservice(microservice_id)
+        tools = await tool_repo.get_tools_by_microservice(microservice_id)
 
         result = []
         for tool in tools:
@@ -391,8 +349,9 @@ async def list_all_tools(
 ) -> PageResult:
     """获取所有工具列表（按网关查看权限过滤，包含业务线信息）"""
     try:
-        repository = McpGatewayRepository(db)
-        tools = await repository.get_all_tools()
+        tool_repo = ToolRepository(db)
+        ms_repo = MicroserviceRepository(db)
+        tools = await tool_repo.get_all_tools()
 
         # 基于网关 can_read 权限过滤工具
         accessible_gw_ids = await get_accessible_gateway_ids(current_user, db)
@@ -402,7 +361,7 @@ async def list_all_tools(
             tools = [t for t in tools if t.gateway_id in accessible_set]
 
         # 构建微服务映射
-        microservices = await repository.get_all_microservices()
+        microservices = await ms_repo.get_all_microservices()
         ms_map = {ms.id: ms for ms in microservices}
 
         # 构建业务线映射（确保 business_line 不为空）
@@ -458,10 +417,11 @@ async def bind_tool(
 ) -> Result:
     """绑定工具到微服务"""
     try:
-        repository = McpGatewayRepository(db)
+        tool_repo = ToolRepository(db)
+        ms_repo = MicroserviceRepository(db)
 
         # 检查工具是否存在
-        tool = await repository.get_tool_by_id(tool_id)
+        tool = await tool_repo.get_tool_by_id(tool_id)
         if not tool:
             return Result.not_found("工具不存在")
 
@@ -469,11 +429,11 @@ async def bind_tool(
         await _check_tool_gateway_permission(tool, "update", current_user, db)
 
         # 检查微服务是否存在
-        microservice = await repository.get_microservice_by_id(request.microservice_id)
+        microservice = await ms_repo.get_microservice_by_id(request.microservice_id)
         if not microservice:
             return Result.not_found("微服务不存在")
 
-        await repository.bind_tool_to_microservice(tool_id, request.microservice_id)
+        await tool_repo.bind_tool_to_microservice(tool_id, request.microservice_id)
 
         return Result.success(message=f"工具已绑定到微服务: {microservice.name}")
     except Exception as e:
@@ -490,16 +450,16 @@ async def update_tool_enabled(
 ) -> Result:
     """更新工具启用状态"""
     try:
-        repository = McpGatewayRepository(db)
+        tool_repo = ToolRepository(db)
 
-        tool = await repository.get_tool_by_id(tool_id)
+        tool = await tool_repo.get_tool_by_id(tool_id)
         if not tool:
             return Result.not_found("工具不存在")
 
         # 检查网关级别权限（can_update）
         await _check_tool_gateway_permission(tool, "update", current_user, db)
 
-        await repository.update_tool_enabled(tool_id, request.enabled)
+        await tool_repo.update_tool_enabled(tool_id, request.enabled)
 
         status_text = "启用" if request.enabled == 1 else "禁用"
         return Result.success(message=f"工具已{status_text}")
@@ -516,9 +476,9 @@ async def get_tool_detail(
 ) -> Result:
     """获取工具详情（含HTTP配置和参数映射）"""
     try:
-        repository = McpGatewayRepository(db)
+        tool_repo = ToolRepository(db)
 
-        tool = await repository.get_tool_by_id(tool_id)
+        tool = await tool_repo.get_tool_by_id(tool_id)
         if not tool:
             return Result.not_found("工具不存在")
 
@@ -526,7 +486,7 @@ async def get_tool_detail(
         await _check_tool_gateway_permission(tool, "read", current_user, db)
 
         # 获取HTTP协议配置
-        http_config = await repository.get_protocol_http_by_id(tool.protocol_id)
+        http_config = await tool_repo.get_protocol_http_by_id(tool.protocol_id)
         http_data = None
         if http_config:
             http_data = {
@@ -538,7 +498,7 @@ async def get_tool_detail(
             }
 
         # 获取参数映射
-        mappings = await repository.get_protocol_mappings(tool.protocol_id)
+        mappings = await tool_repo.get_protocol_mappings(tool.protocol_id)
         params_data = [
             {
                 "id": m.id,
@@ -579,9 +539,9 @@ async def update_tool(
 ) -> Result:
     """更新工具信息（含HTTP配置和参数映射）"""
     try:
-        repository = McpGatewayRepository(db)
+        tool_repo = ToolRepository(db)
 
-        tool = await repository.get_tool_by_id(tool_id)
+        tool = await tool_repo.get_tool_by_id(tool_id)
         if not tool:
             return Result.not_found("工具不存在")
 
@@ -595,7 +555,7 @@ async def update_tool(
         if request.tool_description is not None:
             update_data["tool_description"] = request.tool_description
         if update_data:
-            await repository.update_tool(tool_id, **update_data)
+            await tool_repo.update_tool(tool_id, **update_data)
 
         # 更新HTTP协议配置
         if request.http_config is not None:
@@ -611,11 +571,11 @@ async def update_tool(
             if request.http_config.retry_times is not None:
                 http_update["retry_times"] = request.http_config.retry_times
             if http_update:
-                await repository.update_protocol_http(tool.protocol_id, **http_update)
+                await tool_repo.update_protocol_http(tool.protocol_id, **http_update)
 
         # 更新参数映射（全量替换）
         if request.parameters is not None:
-            await repository.delete_protocol_mappings(tool.protocol_id)
+            await tool_repo.delete_protocol_mappings(tool.protocol_id)
             if request.parameters:
                 new_mappings = [
                     McpProtocolMapping(
@@ -632,7 +592,7 @@ async def update_tool(
                     )
                     for p in request.parameters
                 ]
-                await repository.batch_create_protocol_mappings(new_mappings)
+                await tool_repo.batch_create_protocol_mappings(new_mappings)
 
         return Result.success(message="更新成功")
     except Exception as e:

@@ -23,7 +23,10 @@ from app.services.mcp_tool_registry import mcp_tool_registry
 from app.services.conversation_logger import conversation_logger
 from app.domain.protocol.websocket import WSEventFactory
 from app.infrastructure.database import async_session_factory
-from app.infrastructure.database.repository import McpGatewayRepository
+from app.infrastructure.database.repositories import (
+    AuthRepository, GatewayRepository, MicroserviceRepository,
+    LlmConfigRepository,
+)
 from app.utils.security import parse_api_key
 
 logger = logging.getLogger(__name__)
@@ -43,30 +46,34 @@ async def verify_gateway_key(gateway_key: str = Body(..., media_type="text/plain
         raise HTTPException(status_code=400, detail="网关 API Key 不能为空")
 
     async with async_session_factory() as session:
-        repo = McpGatewayRepository(session)
+        auth_repo = AuthRepository(session)
+        gw_repo = GatewayRepository(session)
+        ms_repo = MicroserviceRepository(session)
+        llm_repo = LlmConfigRepository(session)
 
         # 验证 gateway_key 并获取 gateway_id
-        gateway_id = await repo.get_gateway_id_by_api_key(gateway_key)
+        gateway_id = await auth_repo.get_gateway_id_by_api_key(gateway_key)
         if not gateway_id:
             raise HTTPException(status_code=401, detail="无效的网关 API Key")
 
         # 获取网关信息
-        gateway = await repo.get_gateway_by_id(gateway_id)
+        gateway = await gw_repo.get_gateway_by_id(gateway_id)
         if not gateway:
             raise HTTPException(status_code=404, detail="网关不存在")
 
         # 获取绑定的微服务ID列表
-        bound_ms = await repo.get_gateway_microservices(gateway_id)
+        bound_ms = await gw_repo.get_gateway_microservices(gateway_id)
         bound_ms_ids = [bm.microservice_id for bm in bound_ms]
 
         # 获取微服务详情
         microservices = []
         for ms_id in bound_ms_ids:
-            ms = await repo.get_microservice_by_id(ms_id)
+            ms = await ms_repo.get_microservice_by_id(ms_id)
             if ms:
                 business_line_name = None
                 if ms.business_line_id:
-                    bl = await repo.get_business_line_by_id(ms.business_line_id)
+                    from app.infrastructure.database.models import SysBusinessLine
+                    bl = await session.get(SysBusinessLine, ms.business_line_id)
                     business_line_name = bl.line_name if bl else None
                 microservices.append(
                     MicroserviceInfo(
@@ -78,7 +85,7 @@ async def verify_gateway_key(gateway_key: str = Body(..., media_type="text/plain
                 )
 
         # 获取网关绑定的LLM配置列表
-        llm_configs = await repo.get_gateway_llm_configs(gateway_id)
+        llm_configs = await llm_repo.get_gateway_llm_configs(gateway_id)
         llm_config_infos = [
             LlmConfigInfo(
                 config_id=lc.config_id,
@@ -114,8 +121,8 @@ async def test_llm_config(llm_config_id: str = Body(..., media_type="text/plain"
         raise HTTPException(status_code=400, detail="LLM配置ID不能为空")
 
     async with async_session_factory() as session:
-        repo = McpGatewayRepository(session)
-        llm_config = await repo.get_llm_config_by_config_id(llm_config_id)
+        llm_repo = LlmConfigRepository(session)
+        llm_config = await llm_repo.get_llm_config_by_config_id(llm_config_id)
 
         if not llm_config:
             raise HTTPException(status_code=404, detail="LLM配置不存在")
@@ -182,26 +189,28 @@ async def create_chat_session(request: SessionRequest):
 
     # 验证 gateway_key 是否有效，并获取 gateway_id
     async with async_session_factory() as session:
-        repo = McpGatewayRepository(session)
-        gateway_id = await repo.get_gateway_id_by_api_key(request.gateway_key)
+        auth_repo = AuthRepository(session)
+        llm_repo = LlmConfigRepository(session)
+        gw_repo = GatewayRepository(session)
+        gateway_id = await auth_repo.get_gateway_id_by_api_key(request.gateway_key)
         if not gateway_id:
             raise HTTPException(status_code=401, detail="无效的网关 API Key")
-
+    
         # 验证 LLM配置是否存在并绑定到该网关
-        is_bound = await repo.is_llm_bound_to_gateway(gateway_id, request.llm_config_id)
+        is_bound = await llm_repo.is_llm_bound_to_gateway(gateway_id, request.llm_config_id)
         if not is_bound:
             raise HTTPException(
                 status_code=403,
                 detail="该LLM配置未绑定到此网关",
             )
-
+    
         # 获取LLM配置
-        llm_config = await repo.get_llm_config_by_config_id(request.llm_config_id)
+        llm_config = await llm_repo.get_llm_config_by_config_id(request.llm_config_id)
         if not llm_config:
             raise HTTPException(status_code=404, detail="LLM配置不存在")
-
+    
         # 获取网关绑定的微服务列表
-        bound_microservices = await repo.get_gateway_microservices(gateway_id)
+        bound_microservices = await gw_repo.get_gateway_microservices(gateway_id)
         bound_ms_ids = {bm.microservice_id for bm in bound_microservices}
 
         # 验证所选微服务是否都在该网关上（权限隔离）
@@ -277,8 +286,8 @@ async def websocket_handler(websocket):
     gateway_id = None
     if gateway_key:
         async with async_session_factory() as session:
-            repo = McpGatewayRepository(session)
-            gateway_id = await repo.get_gateway_id_by_api_key(gateway_key)
+            auth_repo = AuthRepository(session)
+            gateway_id = await auth_repo.get_gateway_id_by_api_key(gateway_key)
 
     logger.info(
         f"WebSocket 连接已接受：{session_id}, 网关: {gateway_id}, Key: {key_id}, 微服务筛选: {microservice_ids}, LLM配置: {llm_config_id}"
@@ -296,7 +305,7 @@ async def websocket_handler(websocket):
         logger.error(f"加载工具失败: {e}")
 
     # 获取带 microservice_name 的工具列表（根据选择的微服务筛选）
-    tools_with_ms = await get_tools_with_microservice(microservice_ids)
+    tools_with_ms = await mcp_tool_registry.get_tools_with_microservice(microservice_ids)
     allowed_tool_names = [t["name"] for t in tools_with_ms]
     logger.info(f"允许的工具({len(allowed_tool_names)}个): {allowed_tool_names}")
 
@@ -386,45 +395,4 @@ async def load_tools_from_db(gateway_id: str = None):
     """从数据库加载工具，如果 gateway_id 为 None 则加载所有工具"""
     async with async_session_factory() as session:
         result = await mcp_tool_registry.load_tools_from_db(session, gateway_id)
-        return result
-
-
-async def get_tools_with_microservice(
-    microservice_ids: Optional[List[int]] = None,
-) -> list:
-    """
-    获取带 microservice_name 的工具列表
-
-    Args:
-        microservice_ids: 可选，筛选指定微服务的工具。为 None 时返回所有工具
-    """
-    async with async_session_factory() as session:
-        repo = McpGatewayRepository(session)
-        all_tools = await repo.get_all_tools()
-        enabled_tools = [t for t in all_tools if t.enabled == 1]
-        all_microservices = await repo.get_all_microservices()
-        ms_map = {ms.id: ms.name for ms in all_microservices}
-
-        result = []
-        for tool in enabled_tools:
-            # 过滤：必须有微服务绑定
-            if not tool.microservice_id or tool.microservice_id not in ms_map:
-                continue
-
-            # 如果指定了微服务筛选，只返回选中微服务的工具
-            if microservice_ids and tool.microservice_id not in microservice_ids:
-                continue
-
-            tool_def = mcp_tool_registry.get_tool(tool.tool_name)
-            if tool_def:
-                result.append(
-                    {
-                        "name": tool_def.name,
-                        "description": tool_def.description,
-                        "input_schema": tool_def.input_schema,
-                        "microservice_name": ms_map[tool.microservice_id],
-                    }
-                )
-
-        logger.info(f"加载工具: {len(result)} 个, 筛选微服务: {microservice_ids}")
         return result

@@ -90,7 +90,7 @@ async def get_usage_stats(
         )
     except Exception as e:
         logger.error(f"获取使用统计失败: {e}")
-        return Result.error("SYSTEM_ERROR", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.get("/usage/keys")
@@ -144,7 +144,7 @@ async def get_key_usage_list(
         return Result.success(key_usage_list)
     except Exception as e:
         logger.error(f"获取Key使用情况失败: {e}")
-        return Result.error("SYSTEM_ERROR", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.get("/usage/logs")
@@ -220,7 +220,7 @@ async def get_usage_logs(
         )
     except Exception as e:
         logger.error(f"获取使用日志失败: {e}")
-        return Result.error("SYSTEM_ERROR", str(e))
+        return Result.internal_error(str(e))
 
 
 @router.post("/usage/reset")
@@ -241,7 +241,7 @@ async def reset_usage(
             logger.info(f"重置使用计数: {gateway_id}/{key_id}")
             return Result.success({"message": "重置成功"})
         else:
-            return Result.error("SYSTEM_ERROR", "重置失败")
+            return Result.internal_error("重置失败")
     except Exception as e:
         logger.error(f"重置使用计数失败: {e}")
-        return Result.error("SYSTEM_ERROR", str(e))
+        return Result.internal_error(str(e))

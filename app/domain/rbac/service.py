@@ -21,13 +21,15 @@ from app.domain.rbac.models import (
 )
 from app.utils.exceptions import AuthException
 from app.infrastructure.cache.redis_client import get_redis, PermissionCache
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
-# JWT配置
-SECRET_KEY = "ai-mcp-gateway-secret-key-2026"  # 生产环境应从配置读取
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 24
+# JWT配置（从配置中心读取）
+SECRET_KEY = settings.jwt_secret_key
+ALGORITHM = settings.jwt_algorithm
+ACCESS_TOKEN_EXPIRE_HOURS = settings.jwt_expire_hours
 
 
 class RbacService:
@@ -514,13 +516,3 @@ class PermissionService:
                             return True
         
         return False
-
-
-def hash_password(password: str) -> str:
-    """密码哈希"""
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """验证密码"""
-    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))

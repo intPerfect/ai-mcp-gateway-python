@@ -12,7 +12,7 @@ from app.infrastructure.database.connection import get_db_session
 from app.infrastructure.database.repository import RbacRepository
 from app.infrastructure.database.models import SysUser
 from app.domain.rbac import UserInfo, UserCreate, UserUpdate, BusinessLineInfo
-from app.domain.rbac.service import hash_password
+from app.utils.security import hash_password
 from app.utils.result import Result
 from app.api.routers.auth import (
     require_permission,
